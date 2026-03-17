@@ -1,5 +1,4 @@
 *.wav
-_internal/
 hf_home/
 temp/
 __pycache__/

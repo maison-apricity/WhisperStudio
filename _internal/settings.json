@@ -1,0 +1,8 @@
+{
+  "language": "ja",
+  "model_id": "large-v3-turbo",
+  "preferred_device": "auto",
+  "last_good_device": "cuda",
+  "last_good_compute_type": "float16",
+  "preset_id": "dialogue-video"
+}
