@@ -5,3 +5,4 @@ ffmpeg/
 __pycache__/
 .venv/
 .venv_*/
+settings.json
