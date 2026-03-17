@@ -98,6 +98,9 @@ class SubtitleGUI(tk.Tk):
         self.model_note_var = tk.StringVar(value="모델 설명을 불러오는 중입니다.")
         self.device_note_var = tk.StringVar(value="장치 선호 설명을 불러오는 중입니다.")
         self.model_state_var = tk.StringVar(value="모델 상태 확인 중")
+        self.model_status_summary_var = tk.StringVar(value="선택 모델의 로컬 상태를 확인하는 중입니다.")
+        self.model_cache_path_var = tk.StringVar(value="아직 준비된 캐시 위치가 없습니다.")
+        self.preprocess_status_var = tk.StringVar(value="")
         self.resource_summary_var = tk.StringVar(value="실시간 자원 상태를 불러오는 중입니다.")
         self.resource_meta_var = tk.StringVar(value="마지막 갱신 --:--:--")
         self.file_var = tk.StringVar(value="입력 파일을 선택하십시오")
@@ -275,6 +278,30 @@ class SubtitleGUI(tk.Tk):
                 anchor="w",
             ).pack(anchor="w", pady=(2, 0))
 
+    def _make_labeled_info_row(self, parent, label_text, textvariable, bg, wraplength=900):
+        row = tk.Frame(parent, bg=bg)
+        row.pack(fill="x", pady=(0, 6))
+        tk.Label(
+            row,
+            text=label_text,
+            bg=bg,
+            fg=self.colors["subtext"],
+            font=self.font_body_bold,
+            width=8,
+            anchor="nw",
+            justify="left",
+        ).pack(side="left", anchor="n", padx=(0, 10))
+        tk.Label(
+            row,
+            textvariable=textvariable,
+            bg=bg,
+            fg=self.colors["text"],
+            font=self.font_small,
+            anchor="w",
+            justify="left",
+            wraplength=wraplength,
+        ).pack(side="left", fill="x", expand=True)
+
     def _make_button(self, parent, text, command, kind="secondary", state="normal", width=None):
         palette = {
             "primary": {
@@ -357,6 +384,7 @@ class SubtitleGUI(tk.Tk):
         self.current_task_kind = kind
         self.current_task_label = label
         self.current_progress_percent = 0.0
+        self.preprocess_status_var.set("")
         self.job_started_at = time.time()
         self.start_btn.config(state="disabled")
         try:
@@ -1219,26 +1247,38 @@ class SubtitleGUI(tk.Tk):
             pady=10,
         )
         model_wrap.pack(fill="x", pady=(4, 8))
-        tk.Label(model_wrap, text="모델", bg="#F8FAFC", fg=self.colors["text"], font=self.font_body_bold).pack(anchor="w")
-    
-        model_top = tk.Frame(model_wrap, bg="#F8FAFC")
-        model_top.pack(fill="x", pady=(8, 0))
-        text_wrap = tk.Frame(model_top, bg="#F8FAFC")
-        text_wrap.pack(side="left", fill="x", expand=True)
-        top_line = tk.Frame(text_wrap, bg="#F8FAFC")
-        top_line.pack(fill="x")
-        tk.Label(top_line, textvariable=self.model_display_var, bg="#F8FAFC", fg=self.colors["text"], font=self.font_body_bold, anchor="w", justify="left").pack(side="left", anchor="w")
-        self.model_cache_badge = tk.Label(top_line, text="확인 중", bg="#E5E7EB", fg="#374151", font=self.font_badge, padx=8, pady=3)
+
+        model_head = tk.Frame(model_wrap, bg="#F8FAFC")
+        model_head.pack(fill="x")
+
+        left_head = tk.Frame(model_head, bg="#F8FAFC")
+        left_head.pack(side="left", fill="x", expand=True)
+        title_row = tk.Frame(left_head, bg="#F8FAFC")
+        title_row.pack(fill="x")
+        tk.Label(title_row, text="모델", bg="#F8FAFC", fg=self.colors["text"], font=self.font_body_bold).pack(side="left")
+        self.model_cache_badge = tk.Label(title_row, text="확인 중", bg="#E5E7EB", fg="#374151", font=self.font_badge, padx=8, pady=3)
         self.model_cache_badge.pack(side="left", padx=(10, 0))
-        tk.Label(text_wrap, textvariable=self.model_meta_var, bg="#F8FAFC", fg=self.colors["subtext"], font=self.font_small, anchor="w", justify="left", wraplength=620).pack(anchor="w", pady=(4, 0), fill="x")
-        self.model_selector_btn = self._make_button(model_top, "모델 선택", self.open_model_selector, kind="soft")
-        self.model_selector_btn.pack(side="right", padx=(10, 0))
-    
-        action_row = tk.Frame(model_wrap, bg="#F8FAFC")
-        action_row.pack(fill="x", pady=(8, 0))
+        tk.Label(left_head, textvariable=self.model_display_var, bg="#F8FAFC", fg=self.colors["text"], font=self.font_emphasis, anchor="w", justify="left").pack(anchor="w", pady=(8, 0), fill="x")
+
+        action_row = tk.Frame(model_head, bg="#F8FAFC")
+        action_row.pack(side="right", anchor="n")
+        self.model_selector_btn = self._make_button(action_row, "모델 선택", self.open_model_selector, kind="soft")
+        self.model_selector_btn.pack(side="left", padx=(0, 8))
         self.model_download_btn = self._make_button(action_row, "모델 다운로드", self.start_model_download, kind="soft")
-        self.model_download_btn.pack(side="right")
-        tk.Label(model_wrap, textvariable=self.model_state_var, bg="#F8FAFC", fg=self.colors["subtext"], font=self.font_small, anchor="w", justify="left", wraplength=920).pack(anchor="w", pady=(8, 0))
+        self.model_download_btn.pack(side="left")
+
+        model_info = tk.Frame(
+            model_wrap,
+            bg="#FFFFFF",
+            highlightthickness=1,
+            highlightbackground=self.colors["border"],
+            padx=12,
+            pady=10,
+        )
+        model_info.pack(fill="x", pady=(10, 0))
+        self._make_labeled_info_row(model_info, "설명", self.model_meta_var, bg="#FFFFFF", wraplength=860)
+        self._make_labeled_info_row(model_info, "상태", self.model_status_summary_var, bg="#FFFFFF", wraplength=860)
+        self._make_labeled_info_row(model_info, "캐시 위치", self.model_cache_path_var, bg="#FFFFFF", wraplength=860)
     
         device_wrap = tk.Frame(self.advanced_options_panel, bg="#F8FAFC", highlightthickness=1, highlightbackground=self.colors["border"], padx=12, pady=10)
         device_wrap.pack(fill="x", pady=(0, 8))
@@ -1581,6 +1621,16 @@ class SubtitleGUI(tk.Tk):
             anchor="w",
             justify="left",
         ).pack(anchor="w")
+        tk.Label(
+            transfer_row,
+            textvariable=self.preprocess_status_var,
+            bg=self.colors["dock"],
+            fg=self.colors["subtext"],
+            font=self.font_small,
+            anchor="w",
+            justify="left",
+            wraplength=1120,
+        ).pack(anchor="w")
 
         progress_row = tk.Frame(dock, bg=self.colors["dock"])
         progress_row.pack(fill="x", padx=18, pady=(0, 14))
@@ -1650,20 +1700,25 @@ class SubtitleGUI(tk.Tk):
         except Exception:
             self._set_badge(self.model_cache_badge, "확인 실패", "warning")
             self.model_state_var.set("선택 모델의 로컬 준비 상태를 확인하지 못했습니다.")
+            self.model_status_summary_var.set("선택 모델의 로컬 준비 상태를 확인하지 못했습니다.")
+            self.model_cache_path_var.set("모델 캐시 위치를 읽지 못했습니다.")
             self.model_download_btn.configure(text="모델 다운로드", state="normal")
 
     def _apply_model_availability(self, info: dict):
         if info.get("is_cached"):
             self._set_badge(self.model_cache_badge, "로컬 준비됨", "success")
             display_path = info.get("cached_path_display") or self._format_display_path(info.get("cached_path"), empty="앱 내부 캐시")
-            self.model_state_var.set(
-                "선택 모델이 이미 준비되어 있습니다. 다운로드 없이 바로 사용할 수 있습니다.\n"
-                f"캐시 위치: {display_path}"
-            )
+            summary = "선택 모델이 이미 준비되어 있습니다. 다운로드 없이 바로 사용할 수 있습니다."
+            self.model_state_var.set(summary)
+            self.model_status_summary_var.set(summary)
+            self.model_cache_path_var.set(display_path)
             self.model_download_btn.configure(text="모델 준비됨", state="disabled")
         else:
             self._set_badge(self.model_cache_badge, "다운로드 필요", "warning")
-            self.model_state_var.set("선택 모델이 아직 로컬에 없습니다. 지금 수동으로 받거나, 실행 시 필요한 시점에 자동으로 받을 수 있습니다.")
+            summary = "선택 모델이 아직 로컬에 없습니다. 지금 수동으로 받거나, 실행 시 필요한 시점에 자동으로 받을 수 있습니다."
+            self.model_state_var.set(summary)
+            self.model_status_summary_var.set(summary)
+            self.model_cache_path_var.set("다운로드 후 앱 내부 캐시에 자동으로 정리됩니다.")
             self.model_download_btn.configure(text="모델 다운로드", state="normal")
 
     
@@ -2046,6 +2101,30 @@ class SubtitleGUI(tk.Tk):
         rec = self._recommendations_for_current_inputs()
         self.recommendation_summary_var.set(rec.get("summary", ""))
         self.recommendation_meta_var.set(rec.get("meta", ""))
+
+    def _format_preprocess_summary(self, preprocess_info: dict | None) -> str:
+        if not preprocess_info:
+            return ""
+        summary = str(preprocess_info.get("summary", "")).strip()
+        if summary:
+            return summary
+        mode = preprocess_info.get("mode", "")
+        if mode == "enhanced":
+            label = {"standard": "표준", "strong": "강함"}.get(preprocess_info.get("applied_level"), "적용")
+            return f"전처리 완료 · 음성 보정 {label} 적용"
+        if mode == "fallback-basic":
+            return "전처리 fallback · 기본 전처리 사용"
+        if mode == "basic":
+            return "전처리 완료 · 기본 추출 사용"
+        return "원본 입력 사용"
+
+    def _update_preprocess_status(self, preprocess_info: dict | None, input_path: str | None = None):
+        summary = self._format_preprocess_summary(preprocess_info)
+        if not summary:
+            self.preprocess_status_var.set("")
+            return
+        prefix = f"전처리 · {os.path.basename(input_path)} · " if input_path and len(self.input_files) > 1 else "전처리 · "
+        self.preprocess_status_var.set(prefix + summary)
     
     def apply_recommendations(self):
         rec = self._recommendations_for_current_inputs()
@@ -2136,7 +2215,7 @@ class SubtitleGUI(tk.Tk):
         tk.Label(header, text="상태 보고서", bg=self.colors["bg"], fg=self.colors["text"], font=self.font_heading).pack(anchor="w")
         tk.Label(
             header,
-            text="새로고침 버튼을 누르면 현재 자원 정보와 초기 점검 결과를 다시 반영합니다. 창을 열어 둔 상태에서도 값이 계속 갱신됩니다.",
+            text="실행 환경, 모델 준비 상태, 장치 판정, 현재 자원 자용량을 한 번에 확인할 수 있습니다. 일부 오류가 있을 수 있으니 참조용으로만 활용하시기 바랍니다.",
             bg=self.colors["bg"],
             fg=self.colors["subtext"],
             font=self.font_small,
@@ -2427,6 +2506,7 @@ class SubtitleGUI(tk.Tk):
                     "primary_path": result["primary_path"],
                     "saved_paths": result["saved_paths"],
                     "effective_lang": result.get("effective_lang", lang_code),
+                    "preprocess_info": result.get("preprocess_info"),
                 }
                 batch_results.append(batch_item)
                 self.msg_queue.put(("batch_item_done", batch_item))
@@ -2521,8 +2601,13 @@ class SubtitleGUI(tk.Tk):
                     self._append_log(f"[{payload['index']}/{payload['total']}] 처리 시작: {payload['path']}")
     
                 elif kind == "batch_item_done":
+                    preprocess_info = payload.get("preprocess_info")
+                    preprocess_summary = self._format_preprocess_summary(preprocess_info)
+                    if preprocess_summary:
+                        self._append_log(f"[{payload['index']}/{payload['total']}] {preprocess_summary}")
                     saved = ", ".join(f"{fmt.upper()}={path}" for fmt, path in payload.get("saved_paths", {}).items())
                     self._append_log(f"[{payload['index']}/{payload['total']}] 저장 완료: {saved}")
+                    self._update_preprocess_status(preprocess_info, payload.get("input_path"))
                     self.output_path = payload.get("primary_path")
                     self.output_paths = dict(payload.get("saved_paths", {}))
                     self.open_result_btn.config(state="normal")

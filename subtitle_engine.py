@@ -417,18 +417,31 @@ def _ffmpeg_timeout_seconds(media_path: str) -> float:
     duration = probe_media_duration_seconds(media_path)
     if duration is None:
         return 180.0
-    return max(90.0, min(1800.0, duration * 2.5 + 60.0))
+    return max(90.0, min(600.0, duration * 2.5 + 60.0))
 
 
-def prepare_media_input(media_path: str, log, cancel_event=None, audio_enhance_level: str = DEFAULT_AUDIO_ENHANCE_LEVEL):
-    ffmpeg = ffmpeg_binary_path()
-    if not ffmpeg:
-        log("FFmpeg를 찾지 못했습니다. 원본 미디어를 직접 전사 입력으로 사용합니다.")
-        return media_path, None
+def _format_seconds_label(seconds: float | None) -> str:
+    if seconds is None:
+        return "--"
+    seconds = max(0.0, float(seconds))
+    if seconds >= 120.0:
+        minutes = int(seconds // 60)
+        remain = int(seconds % 60)
+        return f"{minutes}분 {remain}초"
+    if seconds >= 10.0:
+        return f"{seconds:.0f}초"
+    return f"{seconds:.1f}초"
 
-    work_dir = temp_work_dir()
-    tmp_name = f"whisper_input_{uuid.uuid4().hex}.wav"
-    out_path = os.path.join(work_dir, tmp_name)
+
+def _run_ffmpeg_extract(
+    *,
+    ffmpeg: str,
+    media_path: str,
+    out_path: str,
+    cancel_event=None,
+    filter_chain: str | None = None,
+    timeout_sec: float | None = None,
+) -> dict:
     cmd = [
         ffmpeg,
         "-hide_banner",
@@ -437,13 +450,8 @@ def prepare_media_input(media_path: str, log, cancel_event=None, audio_enhance_l
         "-i", media_path,
         "-vn",
     ]
-    filter_chain = _audio_enhance_filter(audio_enhance_level)
     if filter_chain:
         cmd.extend(["-af", filter_chain])
-        level_label = {"standard": "표준", "strong": "강함"}.get(audio_enhance_level, audio_enhance_level)
-        log(f"입력 전처리: 음성 보정 {level_label} 적용")
-    else:
-        log("입력 전처리: 기본 추출 모드")
     cmd.extend([
         "-ac", "1",
         "-ar", "16000",
@@ -452,28 +460,52 @@ def prepare_media_input(media_path: str, log, cancel_event=None, audio_enhance_l
     ])
 
     proc = None
+    started = time.perf_counter()
     try:
-        log(f"입력 전처리: FFmpeg 사용 ({os.path.basename(ffmpeg)})")
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        started = time.perf_counter()
-        timeout_sec = _ffmpeg_timeout_seconds(media_path)
         while True:
             _raise_if_cancelled(cancel_event)
             code = proc.poll()
             if code is not None:
                 break
-            if time.perf_counter() - started > timeout_sec:
-                proc.kill()
-                raise RuntimeError("FFMPEG_PREPROCESS_TIMEOUT")
+            elapsed = time.perf_counter() - started
+            if timeout_sec is not None and elapsed > timeout_sec:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    proc.communicate(timeout=1)
+                except Exception:
+                    pass
+                return {
+                    "ok": False,
+                    "reason": "timeout",
+                    "elapsed_seconds": elapsed,
+                    "stderr": "timeout",
+                    "returncode": None,
+                }
             time.sleep(0.15)
 
-        stdout, stderr_bytes = proc.communicate()
+        _, stderr_bytes = proc.communicate()
+        stderr_lines = stderr_bytes.decode("utf-8", errors="ignore").strip().splitlines()
+        stderr_text = stderr_lines[-1] if stderr_lines else ""
+        elapsed = time.perf_counter() - started
         if proc.returncode == 0 and os.path.isfile(out_path):
-            return out_path, out_path
-
-        stderr = stderr_bytes.decode("utf-8", errors="ignore").strip().splitlines()[-1:]
-        err_text = stderr[0] if stderr else f"return code {proc.returncode}"
-        log(f"FFmpeg 전처리 실패: {err_text} · 원본 미디어로 계속합니다.")
+            return {
+                "ok": True,
+                "reason": "ok",
+                "elapsed_seconds": elapsed,
+                "stderr": stderr_text,
+                "returncode": proc.returncode,
+            }
+        return {
+            "ok": False,
+            "reason": "ffmpeg_error",
+            "elapsed_seconds": elapsed,
+            "stderr": stderr_text or f"return code {proc.returncode}",
+            "returncode": proc.returncode,
+        }
     except RuntimeError:
         if proc is not None:
             try:
@@ -482,64 +514,145 @@ def prepare_media_input(media_path: str, log, cancel_event=None, audio_enhance_l
                 pass
         raise
     except Exception as exc:
-        if str(exc) == "FFMPEG_PREPROCESS_TIMEOUT":
-            log("FFmpeg 전처리 시간이 예상보다 길어 기본 입력으로 전환합니다.")
-        else:
-            log(f"FFmpeg 전처리 실패: {exc} · 원본 미디어로 계속합니다.")
+        return {
+            "ok": False,
+            "reason": "exception",
+            "elapsed_seconds": time.perf_counter() - started,
+            "stderr": str(exc),
+            "returncode": getattr(proc, "returncode", None),
+        }
 
+
+def _cleanup_temp_file(path: str | None) -> None:
+    if not path:
+        return
     try:
-        if os.path.isfile(out_path):
-            os.remove(out_path)
+        if os.path.isfile(path):
+            os.remove(path)
     except Exception:
         pass
-    return media_path, None
+
+
+def prepare_media_input(media_path: str, log, cancel_event=None, audio_enhance_level: str = DEFAULT_AUDIO_ENHANCE_LEVEL):
+    requested_level = str(audio_enhance_level or DEFAULT_AUDIO_ENHANCE_LEVEL).strip().lower()
+    if requested_level not in {"off", "standard", "strong"}:
+        requested_level = DEFAULT_AUDIO_ENHANCE_LEVEL
+
+    preprocess_info = {
+        "requested_level": requested_level,
+        "applied_level": "off",
+        "mode": "direct",
+        "fallback_used": False,
+        "fallback_reason": "",
+        "source": "original",
+        "timeout_seconds": None,
+        "elapsed_seconds": 0.0,
+        "summary": "원본 입력 사용",
+    }
+
+    ffmpeg = ffmpeg_binary_path()
+    if not ffmpeg:
+        log("입력 전처리: FFmpeg를 찾지 못해 원본 미디어를 직접 사용합니다.")
+        preprocess_info["summary"] = "전처리 건너뜀 · FFmpeg 없음"
+        return media_path, None, preprocess_info
+
+    timeout_sec = _ffmpeg_timeout_seconds(media_path)
+    preprocess_info["timeout_seconds"] = timeout_sec
+    level_label = {"off": "끔", "standard": "표준", "strong": "강함"}.get(requested_level, requested_level)
+    log(f"입력 전처리: FFmpeg 사용 ({os.path.basename(ffmpeg)})")
 
     work_dir = temp_work_dir()
-    tmp_name = f"whisper_input_{uuid.uuid4().hex}.wav"
-    out_path = os.path.join(work_dir, tmp_name)
-    cmd = [
-        ffmpeg,
-        "-y",
-        "-i", media_path,
-        "-vn",
-        "-ac", "1",
-        "-ar", "16000",
-        "-acodec", "pcm_s16le",
-        out_path,
-    ]
+    filter_chain = _audio_enhance_filter(requested_level)
 
-    try:
-        log(f"입력 전처리: FFmpeg 사용 ({os.path.basename(ffmpeg)})")
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        while True:
-            _raise_if_cancelled(cancel_event)
-            code = proc.poll()
-            if code is not None:
-                break
-            time.sleep(0.15)
+    if filter_chain:
+        enhanced_path = os.path.join(work_dir, f"whisper_input_enhanced_{uuid.uuid4().hex}.wav")
+        log(f"입력 전처리: 음성 보정 {level_label} 시도 · 제한 { _format_seconds_label(timeout_sec) }")
+        enhanced_result = _run_ffmpeg_extract(
+            ffmpeg=ffmpeg,
+            media_path=media_path,
+            out_path=enhanced_path,
+            cancel_event=cancel_event,
+            filter_chain=filter_chain,
+            timeout_sec=timeout_sec,
+        )
+        preprocess_info["elapsed_seconds"] = float(enhanced_result.get("elapsed_seconds", 0.0) or 0.0)
+        if enhanced_result.get("ok"):
+            preprocess_info.update({
+                "applied_level": requested_level,
+                "mode": "enhanced",
+                "source": "enhanced_wav",
+                "summary": f"전처리 완료 · 음성 보정 {level_label} 적용 ({_format_seconds_label(preprocess_info['elapsed_seconds'])})",
+            })
+            log(preprocess_info["summary"])
+            return enhanced_path, enhanced_path, preprocess_info
 
-        stdout, stderr_bytes = proc.communicate()
-        if proc.returncode == 0 and os.path.isfile(out_path):
-            return out_path, out_path
+        preprocess_info["fallback_used"] = True
+        preprocess_info["fallback_reason"] = enhanced_result.get("reason", "ffmpeg_error")
+        reason = preprocess_info["fallback_reason"]
+        if reason == "timeout":
+            log(f"입력 전처리: 음성 보정 {level_label}이 제한 시간 { _format_seconds_label(timeout_sec) }을 넘어 기본 전처리로 전환합니다.")
+        else:
+            log(f"입력 전처리: 음성 보정 {level_label} 실패 ({enhanced_result.get('stderr', '알 수 없음')}) · 기본 전처리로 전환합니다.")
+        _cleanup_temp_file(enhanced_path)
+    else:
+        log("입력 전처리: 기본 추출 모드")
 
-        stderr = stderr_bytes.decode("utf-8", errors="ignore").strip().splitlines()[-1:]
-        err_text = stderr[0] if stderr else f"return code {proc.returncode}"
-        log(f"FFmpeg 전처리 실패: {err_text} · 원본 미디어로 계속합니다.")
-    except RuntimeError:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        raise
-    except Exception as exc:
-        log(f"FFmpeg 전처리 실패: {exc} · 원본 미디어로 계속합니다.")
+    basic_path = os.path.join(work_dir, f"whisper_input_basic_{uuid.uuid4().hex}.wav")
+    basic_timeout = max(45.0, min(timeout_sec, 600.0))
+    basic_result = _run_ffmpeg_extract(
+        ffmpeg=ffmpeg,
+        media_path=media_path,
+        out_path=basic_path,
+        cancel_event=cancel_event,
+        filter_chain=None,
+        timeout_sec=basic_timeout,
+    )
+    preprocess_info["elapsed_seconds"] = float(preprocess_info.get("elapsed_seconds", 0.0) or 0.0) + float(basic_result.get("elapsed_seconds", 0.0) or 0.0)
+    if basic_result.get("ok"):
+        if preprocess_info.get("fallback_used"):
+            preprocess_info.update({
+                "applied_level": "off",
+                "mode": "fallback-basic",
+                "source": "basic_wav",
+            })
+            if preprocess_info.get("fallback_reason") == "timeout":
+                preprocess_info["summary"] = (
+                    f"전처리 fallback · 음성 보정 {level_label} 시간 초과 → 기본 전처리 사용 "
+                    f"({_format_seconds_label(preprocess_info['elapsed_seconds'])})"
+                )
+            else:
+                preprocess_info["summary"] = (
+                    f"전처리 fallback · 음성 보정 {level_label} 실패 → 기본 전처리 사용 "
+                    f"({_format_seconds_label(preprocess_info['elapsed_seconds'])})"
+                )
+        else:
+            preprocess_info.update({
+                "applied_level": "off",
+                "mode": "basic",
+                "source": "basic_wav",
+                "summary": f"전처리 완료 · 기본 추출 사용 ({_format_seconds_label(preprocess_info['elapsed_seconds'])})",
+            })
+        log(preprocess_info["summary"])
+        return basic_path, basic_path, preprocess_info
 
-    try:
-        if os.path.isfile(out_path):
-            os.remove(out_path)
-    except Exception:
-        pass
-    return media_path, None
+    _cleanup_temp_file(basic_path)
+    if preprocess_info.get("fallback_used"):
+        log(f"입력 전처리: 기본 전처리도 실패했습니다 ({basic_result.get('stderr', '알 수 없음')}). 원본 입력으로 계속합니다.")
+        preprocess_info.update({
+            "applied_level": "off",
+            "mode": "fallback-original",
+            "source": "original",
+            "summary": "전처리 fallback · 원본 입력 사용",
+        })
+    else:
+        log(f"입력 전처리: 기본 추출 실패 ({basic_result.get('stderr', '알 수 없음')}) · 원본 입력을 사용합니다.")
+        preprocess_info.update({
+            "applied_level": "off",
+            "mode": "direct",
+            "source": "original",
+            "summary": "전처리 실패 · 원본 입력 사용",
+        })
+    return media_path, None, preprocess_info
 
 
 # -------------------------------------------
@@ -661,7 +774,7 @@ def run_transcription_job(
 
         _raise_if_cancelled(cancel_event)
         progress(8)
-        transcribe_input, prepared_input_path = prepare_media_input(
+        transcribe_input, prepared_input_path, preprocess_info = prepare_media_input(
             in_path,
             log,
             cancel_event=cancel_event,
@@ -693,7 +806,7 @@ def run_transcription_job(
         save_order = ["srt", "vtt", "txt"]
         primary_path = next((saved_paths[fmt] for fmt in save_order if fmt in saved_paths), next(iter(saved_paths.values())))
         log("결과 저장 완료: " + ", ".join(f"{fmt.upper()}={path}" for fmt, path in saved_paths.items()))
-        return {"primary_path": primary_path, "saved_paths": saved_paths, "effective_lang": effective_lang}
+        return {"primary_path": primary_path, "saved_paths": saved_paths, "effective_lang": effective_lang, "preprocess_info": preprocess_info}
 
 
     finally:
