@@ -2175,10 +2175,15 @@ class SubtitleGUI(tk.Tk):
     def _render_status_report(self):
         if self.status_report_window is None or not self.status_report_window.winfo_exists() or self.status_report_text is None:
             return
+        y_first = self.status_report_text.yview()[0]
+        x_first = self.status_report_text.xview()[0]
         self.status_report_text.configure(state="normal")
         self.status_report_text.delete("1.0", "end")
         self.status_report_text.insert("1.0", self._status_report_text_content())
         self.status_report_text.configure(state="disabled")
+        self.status_report_text.update_idletasks()
+        self.status_report_text.yview_moveto(y_first)
+        self.status_report_text.xview_moveto(x_first)
 
     def _manual_refresh_status_report(self):
         if self.status_report_refreshing:
