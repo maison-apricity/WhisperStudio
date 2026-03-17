@@ -19,9 +19,11 @@ from config import (
     TARGET_CPS,
     MAX_CPS,
     DEFAULT_PRESET_ID,
+    DEFAULT_AUDIO_ENHANCE_LEVEL,
+    DEFAULT_OUTPUT_FORMATS,
     get_transcription_preset,
 )
-from paths import setup_runtime_environment, temp_work_dir, ffmpeg_binary_path
+from paths import setup_runtime_environment, temp_work_dir, ffmpeg_binary_path, clear_temp_work_dir
 
 
 # -------------------------------------------
@@ -320,19 +322,64 @@ def sec2ts(t: float) -> str:
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{ms:03d}"
 
-def save_results(base_path: str, cues: list[dict]) -> str:
-    out_path = base_path + ".srt"
-    srt_lines = []
 
+
+def _write_srt(out_path: str, cues: list[dict]) -> str:
+    srt_lines = []
     for i, cue in enumerate(cues):
         ts = f"{sec2ts(cue['start'])} --> {sec2ts(cue['end'])}"
         txt = cue["text"].strip()
         srt_lines.append(f"{i+1}\n{ts}\n{txt}\n")
-
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(srt_lines))
-
     return out_path
+
+
+def _write_txt(out_path: str, cues: list[dict]) -> str:
+    lines = [cue["text"].replace("\n", " ").strip() for cue in cues if cue.get("text")]
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines).strip() + "\n")
+    return out_path
+
+
+def _write_vtt(out_path: str, cues: list[dict]) -> str:
+    def sec2vtt(t: float) -> str:
+        td = timedelta(seconds=float(t))
+        total_seconds = int(td.total_seconds())
+        ms = int(td.microseconds / 1000)
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{ms:03d}"
+
+    lines = ["WEBVTT", ""]
+    for cue in cues:
+        lines.append(f"{sec2vtt(cue['start'])} --> {sec2vtt(cue['end'])}")
+        lines.append(cue["text"].strip())
+        lines.append("")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return out_path
+
+
+def save_results(base_path: str, cues: list[dict], output_formats: list[str] | tuple[str, ...] | None = None) -> dict:
+    formats = [str(fmt).strip().lower() for fmt in (output_formats or DEFAULT_OUTPUT_FORMATS)]
+    valid_formats = []
+    for fmt in formats:
+        if fmt in {"srt", "txt", "vtt"} and fmt not in valid_formats:
+            valid_formats.append(fmt)
+    if not valid_formats:
+        valid_formats = list(DEFAULT_OUTPUT_FORMATS)
+
+    saved = {}
+    for fmt in valid_formats:
+        out_path = f"{base_path}.{fmt}"
+        if fmt == "srt":
+            saved[fmt] = _write_srt(out_path, cues)
+        elif fmt == "txt":
+            saved[fmt] = _write_txt(out_path, cues)
+        elif fmt == "vtt":
+            saved[fmt] = _write_vtt(out_path, cues)
+    return saved
 
 
 # -------------------------------------------
@@ -343,11 +390,109 @@ def _raise_if_cancelled(cancel_event):
         raise RuntimeError("TRANSCRIPTION_CANCELLED")
 
 
-def prepare_media_input(media_path: str, log, cancel_event=None):
+
+
+def _audio_enhance_filter(level: str) -> str | None:
+    level = str(level or DEFAULT_AUDIO_ENHANCE_LEVEL).strip().lower()
+    if level == "standard":
+        return (
+            "highpass=f=90,"
+            "lowpass=f=7800,"
+            "afftdn=nf=-28,"
+            "acompressor=threshold=0.10:ratio=2:attack=10:release=180:makeup=1.8,"
+            "alimiter=limit=0.95"
+        )
+    if level == "strong":
+        return (
+            "highpass=f=120,"
+            "lowpass=f=6200,"
+            "afftdn=nf=-22,"
+            "acompressor=threshold=0.08:ratio=3.0:attack=5:release=220:makeup=2.5,"
+            "alimiter=limit=0.92"
+        )
+    return None
+
+
+def _ffmpeg_timeout_seconds(media_path: str) -> float:
+    duration = probe_media_duration_seconds(media_path)
+    if duration is None:
+        return 180.0
+    return max(90.0, min(1800.0, duration * 2.5 + 60.0))
+
+
+def prepare_media_input(media_path: str, log, cancel_event=None, audio_enhance_level: str = DEFAULT_AUDIO_ENHANCE_LEVEL):
     ffmpeg = ffmpeg_binary_path()
     if not ffmpeg:
         log("FFmpeg를 찾지 못했습니다. 원본 미디어를 직접 전사 입력으로 사용합니다.")
         return media_path, None
+
+    work_dir = temp_work_dir()
+    tmp_name = f"whisper_input_{uuid.uuid4().hex}.wav"
+    out_path = os.path.join(work_dir, tmp_name)
+    cmd = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-i", media_path,
+        "-vn",
+    ]
+    filter_chain = _audio_enhance_filter(audio_enhance_level)
+    if filter_chain:
+        cmd.extend(["-af", filter_chain])
+        level_label = {"standard": "표준", "strong": "강함"}.get(audio_enhance_level, audio_enhance_level)
+        log(f"입력 전처리: 음성 보정 {level_label} 적용")
+    else:
+        log("입력 전처리: 기본 추출 모드")
+    cmd.extend([
+        "-ac", "1",
+        "-ar", "16000",
+        "-acodec", "pcm_s16le",
+        out_path,
+    ])
+
+    proc = None
+    try:
+        log(f"입력 전처리: FFmpeg 사용 ({os.path.basename(ffmpeg)})")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        started = time.perf_counter()
+        timeout_sec = _ffmpeg_timeout_seconds(media_path)
+        while True:
+            _raise_if_cancelled(cancel_event)
+            code = proc.poll()
+            if code is not None:
+                break
+            if time.perf_counter() - started > timeout_sec:
+                proc.kill()
+                raise RuntimeError("FFMPEG_PREPROCESS_TIMEOUT")
+            time.sleep(0.15)
+
+        stdout, stderr_bytes = proc.communicate()
+        if proc.returncode == 0 and os.path.isfile(out_path):
+            return out_path, out_path
+
+        stderr = stderr_bytes.decode("utf-8", errors="ignore").strip().splitlines()[-1:]
+        err_text = stderr[0] if stderr else f"return code {proc.returncode}"
+        log(f"FFmpeg 전처리 실패: {err_text} · 원본 미디어로 계속합니다.")
+    except RuntimeError:
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        raise
+    except Exception as exc:
+        if str(exc) == "FFMPEG_PREPROCESS_TIMEOUT":
+            log("FFmpeg 전처리 시간이 예상보다 길어 기본 입력으로 전환합니다.")
+        else:
+            log(f"FFmpeg 전처리 실패: {exc} · 원본 미디어로 계속합니다.")
+
+    try:
+        if os.path.isfile(out_path):
+            os.remove(out_path)
+    except Exception:
+        pass
+    return media_path, None
 
     work_dir = temp_work_dir()
     tmp_name = f"whisper_input_{uuid.uuid4().hex}.wav"
@@ -501,6 +646,8 @@ def run_transcription_job(
     log,
     progress,
     preset_id: str = DEFAULT_PRESET_ID,
+    audio_enhance_level: str = DEFAULT_AUDIO_ENHANCE_LEVEL,
+    output_formats: list[str] | tuple[str, ...] | None = None,
     cancel_event=None,
 ):
     setup_runtime_environment()
@@ -514,7 +661,12 @@ def run_transcription_job(
 
         _raise_if_cancelled(cancel_event)
         progress(8)
-        transcribe_input, prepared_input_path = prepare_media_input(in_path, log, cancel_event=cancel_event)
+        transcribe_input, prepared_input_path = prepare_media_input(
+            in_path,
+            log,
+            cancel_event=cancel_event,
+            audio_enhance_level=audio_enhance_level,
+        )
 
         _raise_if_cancelled(cancel_event)
         progress(10)
@@ -535,11 +687,13 @@ def run_transcription_job(
         _raise_if_cancelled(cancel_event)
         progress(98)
         base, _ = os.path.splitext(in_path)
-        out_path = save_results(base, cues)
+        saved_paths = save_results(base, cues, output_formats=output_formats)
 
         progress(100)
-        log(f"결과 저장 완료: {out_path}")
-        return out_path
+        save_order = ["srt", "vtt", "txt"]
+        primary_path = next((saved_paths[fmt] for fmt in save_order if fmt in saved_paths), next(iter(saved_paths.values())))
+        log("결과 저장 완료: " + ", ".join(f"{fmt.upper()}={path}" for fmt, path in saved_paths.items()))
+        return {"primary_path": primary_path, "saved_paths": saved_paths, "effective_lang": effective_lang}
 
 
     finally:

@@ -16,6 +16,8 @@ from config import (
     DEFAULT_LANGUAGE,
     DEFAULT_PREFERRED_DEVICE,
     DEFAULT_PRESET_ID,
+    DEFAULT_AUDIO_ENHANCE_LEVEL,
+    DEFAULT_OUTPUT_FORMATS,
     LANGUAGE_OPTIONS,
     LANGUAGE_KOREAN_NAMES,
     LANGUAGE_NATIVE_NAMES,
@@ -35,19 +37,23 @@ from env_manager import (
 )
 from subtitle_engine import run_transcription_job
 from font_runtime import pick_code_font_family, pick_language_font_family, pick_ui_font_family
+from paths import bundled_icon_path, clear_temp_work_dir
 
 
 class SubtitleGUI(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title(f"{APP_NAME} {APP_VERSION}")
+        self.title(APP_NAME)
         self.geometry("1260x920")
         self.minsize(1020, 720)
 
         self.msg_queue = queue.Queue()
         self.worker_thread = None
         self.output_path = None
+        self.output_paths = {}
+        self.batch_results = []
+        self.input_files = []
         self.settings = load_settings()
         self.status_details = {}
         self.base_status_details = {}
@@ -71,6 +77,10 @@ class SubtitleGUI(tk.Tk):
         self.job_started_at = None
         self.job_clock_job = None
         self.transfer_mode = ""
+        self.status_report_window = None
+        self.status_report_text = None
+        self.status_report_refreshing = False
+        self.advanced_options_visible = False
 
         self.language_value_var = tk.StringVar(value=DEFAULT_LANGUAGE)
         self.language_display_var = tk.StringVar(value="언어를 선택하십시오")
@@ -81,6 +91,7 @@ class SubtitleGUI(tk.Tk):
         self.preset_display_var = tk.StringVar(value="프리셋을 선택하십시오")
         self.preset_note_var = tk.StringVar(value="전사 프리셋 설명을 불러오는 중입니다.")
         self.pref_device_value_var = tk.StringVar(value=DEFAULT_PREFERRED_DEVICE)
+        self.audio_enhance_value_var = tk.StringVar(value=DEFAULT_AUDIO_ENHANCE_LEVEL)
 
         self.status_var = tk.StringVar(value="준비됨")
         self.lang_note_var = tk.StringVar(value="선택 언어 정보를 불러오는 중입니다.")
@@ -89,12 +100,19 @@ class SubtitleGUI(tk.Tk):
         self.model_state_var = tk.StringVar(value="모델 상태 확인 중")
         self.resource_summary_var = tk.StringVar(value="실시간 자원 상태를 불러오는 중입니다.")
         self.resource_meta_var = tk.StringVar(value="마지막 갱신 --:--:--")
+        self.file_var = tk.StringVar(value="입력 파일을 선택하십시오")
+        self.file_summary_var = tk.StringVar(value="선택된 파일이 없습니다.")
+        self.recommendation_summary_var = tk.StringVar(value="파일을 선택하면 권장 설정을 제안합니다.")
+        self.recommendation_meta_var = tk.StringVar(value="")
 
         self.device_display_map = {
             "자동": "auto",
             "GPU": "cuda",
             "CPU": "cpu",
         }
+
+        self._apply_window_icon()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._init_palette()
         self._init_fonts()
@@ -103,6 +121,7 @@ class SubtitleGUI(tk.Tk):
         self._load_settings_into_ui()
         self._refresh_selection_hints()
         self._refresh_model_state_local()
+        self._render_status_report()
 
         self.after(50, self.start_startup_scan)
         self.after(150, self.refresh_live_resource_now)
@@ -193,6 +212,28 @@ class SubtitleGUI(tk.Tk):
             darkcolor=self.colors["accent"],
             thickness=12,
         )
+
+    def _apply_window_icon(self):
+        icon_path = bundled_icon_path()
+        if os.name == "nt":
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("WhisperStudio.App")
+            except Exception:
+                pass
+        if not icon_path:
+            return
+        try:
+            self.iconbitmap(icon_path)
+        except Exception:
+            pass
+
+    def _on_close(self):
+        try:
+            clear_temp_work_dir(remove_root=True)
+        except Exception:
+            pass
+        self.destroy()
 
     # -------------------------------------------------
     # Layout helpers
@@ -376,31 +417,35 @@ class SubtitleGUI(tk.Tk):
         self.job_meta_var.set(msg)
         self.job_clock_job = self.after(500, self._refresh_job_clock)
 
+    
     def _set_transcription_transfer_summary(self):
         lang_code = self.current_lang_code()
         lang_name = get_language_korean_name(lang_code)
         preset = get_transcription_preset(self.current_preset_id())
         self.transfer_mode = "transcription"
+        file_count = len(self.input_files)
+        enhance_label = {"off": "끔", "standard": "표준", "strong": "강함"}.get(self.current_audio_enhance_level(), "끔")
+        outputs = "/".join(fmt.upper() for fmt in self.current_output_formats())
         self.transfer_var.set(
-            f"전사 실행 · 언어 {lang_name} · 프리셋 {preset['label']} · 모델 {self.model_display_var.get()}"
+            f"전사 실행 · 파일 {file_count}개 · 언어 {lang_name} · 프리셋 {preset['label']} · 보정 {enhance_label} · 출력 {outputs}"
         )
         self.transfer_meta_var.set("전사 진행률 0% · 장치와 모델을 준비하는 중입니다.")
-
+    
     def _cancel_current_task(self):
-        if not self.current_task_kind or self.cancel_event is None or self.cancel_event.is_set():
-            return
-        self.cancel_event.set()
-        if self.current_task_kind == "model_download":
-            status = "모델 다운로드 취소를 요청했습니다. 현재 전송 단계가 정리되는 즉시 중단합니다."
-        else:
-            status = "전사 취소를 요청했습니다. 현재 단계가 정리되는 즉시 중단합니다."
-        self._set_status(status)
-        self.transfer_meta_var.set(status)
-        self._append_log(status)
-        if hasattr(self, "cancel_btn"):
-            self.cancel_btn.configure(state="disabled", text="취소 요청됨")
-        self._refresh_job_clock()
-
+            if not self.current_task_kind or self.cancel_event is None or self.cancel_event.is_set():
+                return
+            self.cancel_event.set()
+            if self.current_task_kind == "model_download":
+                status = "모델 다운로드 취소를 요청했습니다. 현재 전송 단계가 정리되는 즉시 중단합니다."
+            else:
+                status = "전사 취소를 요청했습니다. 현재 단계가 정리되는 즉시 중단합니다."
+            self._set_status(status)
+            self.transfer_meta_var.set(status)
+            self._append_log(status)
+            if hasattr(self, "cancel_btn"):
+                self.cancel_btn.configure(state="disabled", text="취소 요청됨")
+            self._refresh_job_clock()
+    
     def _progress_busy_on(self):
         self.progress.configure(mode="indeterminate")
         self.progress.start(12)
@@ -509,6 +554,18 @@ class SubtitleGUI(tk.Tk):
         value = self.pref_device_value_var.get().strip()
         return value if value in {"auto", "cuda", "cpu"} else DEFAULT_PREFERRED_DEVICE
 
+    def current_audio_enhance_level(self) -> str:
+        value = self.audio_enhance_value_var.get().strip().lower()
+        return value if value in {"off", "standard", "strong"} else DEFAULT_AUDIO_ENHANCE_LEVEL
+
+    def current_output_formats(self) -> list[str]:
+        result = []
+        for fmt in ("srt", "txt", "vtt"):
+            var = getattr(self, f"output_fmt_{fmt}_var", None)
+            if var is not None and bool(var.get()):
+                result.append(fmt)
+        return result or list(DEFAULT_OUTPUT_FORMATS)
+
     def _set_language(self, lang_code: str):
         valid_codes = {code for code, _ in LANGUAGE_OPTIONS}
         self.language_value_var.set(lang_code if lang_code in valid_codes else DEFAULT_LANGUAGE)
@@ -582,104 +639,109 @@ class SubtitleGUI(tk.Tk):
             })
         return items
 
+    
     def _refresh_selection_hints(self):
         lang_code = self.current_lang_code()
         lang_name = get_language_korean_name(lang_code)
         self.language_display_var.set(f"{lang_name} · {lang_code}")
         if lang_code == "auto":
-            self.lang_note_var.set("입력 음성의 언어를 자동으로 추정합니다. 정확도 향상을 위해 대상 언어 지정을 권장합니다.")
+            self.lang_note_var.set("입력 음성의 언어를 자동으로 추정합니다. 언어를 지정하면 정확도와 속도가 안정되는 경우가 많습니다.")
         else:
             self.lang_note_var.set(f"입력 음성을 {lang_name} 기준으로 우선 해석합니다.")
         self._refresh_language_button_font()
-
+    
         preset = get_transcription_preset(self.current_preset_id())
         self.preset_display_var.set(preset["label"])
         self.preset_note_var.set(f"{preset['short_note']} · {preset['long_note']}")
-
+    
         entry = next((m for m in MODEL_CATALOG if m["id"] == self.current_model_id()), None)
         if entry is None:
             self.model_display_var.set(default_model_id())
-            self.model_meta_var.set("선택 모델 설명을 찾지 못했습니다.")
-            self.model_note_var.set("선택 모델 설명을 찾지 못했습니다.")
+            model_meta = "선택 모델 설명을 찾지 못했습니다."
         else:
             self.model_display_var.set(entry["label"])
             model_meta = f"{entry['short_note']} · {entry['long_note']}"
-            self.model_meta_var.set(model_meta)
-            self.model_note_var.set(model_meta)
-
+        self.model_meta_var.set(model_meta)
+        self.model_note_var.set(model_meta)
+    
         device_value = self.current_preferred_device()
         self._refresh_device_buttons()
         device_note_map = {
-            "auto": "GPU와 CPU 중 사용 가능한 환경을 자동으로 선택합니다. 속도를 위해 GPU 가속이 우선 시도됩니다.",
-            "cuda": "GPU 가속 사용합니다. 장치와 드라이버가 맞지 않으면 실행 전 점검이 필요합니다.",
-            "cpu": "호환성과 재현성을 우선합니다. 처리 시간은 늘어날 수 있지만 환경 의존성이 가장 낮습니다.",
+            "auto": "GPU와 CPU 중 사용 가능한 환경을 자동으로 선택합니다. 일반 사용자에게 가장 무난한 기본값입니다.",
+            "cuda": "GPU 가속을 우선 시도합니다. 호환 드라이버와 CUDA 런타임이 맞지 않으면 CPU로 전환될 수 있습니다.",
+            "cpu": "호환성과 재현성을 우선합니다. 처리 시간은 늘어나지만 환경 의존성이 가장 낮습니다.",
         }
         self.device_note_var.set(device_note_map.get(device_value, "장치 선호 설정을 확인하십시오."))
-
+    
+        self._refresh_audio_enhance_buttons()
+        self._refresh_output_format_buttons()
+        self._refresh_file_summary()
+        self._refresh_recommendation_ui()
+    
     def _build_selector_popup(self, title: str, anchor_widget, width: int = 520, max_height: int = 380):
-        self._close_selector_popup()
-
-        popup = tk.Toplevel(self)
-        popup.overrideredirect(True)
-        popup.transient(self)
-        popup.configure(bg=self.colors["border"])
-        popup.lift()
-
-        x = anchor_widget.winfo_rootx()
-        y = anchor_widget.winfo_rooty() + anchor_widget.winfo_height() + 6
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        width = min(width, screen_w - 40)
-        height = min(max_height, screen_h - 80)
-        x = max(20, min(x, screen_w - width - 20))
-        y = max(20, min(y, screen_h - height - 40))
-        popup.geometry(f"{width}x{height}+{x}+{y}")
-
-        shell = tk.Frame(popup, bg=self.colors["card"], highlightthickness=1, highlightbackground=self.colors["border"])
-        shell.pack(fill="both", expand=True)
-
-        header = tk.Frame(shell, bg="#F8FAFC")
-        header.pack(fill="x")
-        tk.Label(header, text=title, bg="#F8FAFC", fg=self.colors["text"], font=self.font_heading).pack(side="left", padx=12, pady=10)
-        self._make_button(header, "닫기", self._close_selector_popup, kind="soft").pack(side="right", padx=8, pady=6)
-
-        self.selector_filter_var = tk.StringVar()
-        search_wrap = tk.Frame(shell, bg=self.colors["card"])
-        search_wrap.pack(fill="x", padx=12, pady=(10, 8))
-        tk.Label(search_wrap, text="검색", bg=self.colors["card"], fg=self.colors["subtext"], font=self.font_small).pack(anchor="w")
-        search_entry = ttk.Entry(search_wrap, textvariable=self.selector_filter_var, style="Modern.TEntry")
-        search_entry.pack(fill="x", pady=(4, 0), ipady=3)
-
-        list_wrap = tk.Frame(shell, bg=self.colors["card"])
-        list_wrap.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-
-        self.selector_canvas = tk.Canvas(list_wrap, bg=self.colors["card"], highlightthickness=0, bd=0)
-        self.selector_canvas.pack(side="left", fill="both", expand=True)
-        scroll = ttk.Scrollbar(list_wrap, orient="vertical", command=self.selector_canvas.yview)
-        scroll.pack(side="right", fill="y")
-        self.selector_canvas.configure(yscrollcommand=scroll.set)
-
-        self.selector_inner = tk.Frame(self.selector_canvas, bg=self.colors["card"])
-        self.selector_window_id = self.selector_canvas.create_window((0, 0), window=self.selector_inner, anchor="nw")
-
-        self.selector_inner.bind(
-            "<Configure>",
-            lambda _e: self.selector_canvas.configure(scrollregion=self.selector_canvas.bbox("all")),
-        )
-        self.selector_canvas.bind(
-            "<Configure>",
-            lambda e: self.selector_canvas.itemconfigure(self.selector_window_id, width=e.width),
-        )
-        popup.bind("<Escape>", lambda _e: self._close_selector_popup())
-        popup.bind("<FocusOut>", self._on_selector_popup_focus_out)
-        popup.bind("<MouseWheel>", self._on_selector_mousewheel)
-        popup.bind("<Button-4>", self._on_selector_mousewheel)
-        popup.bind("<Button-5>", self._on_selector_mousewheel)
-
-        self.selector_popup = popup
-        popup.after(10, lambda: search_entry.focus_set())
-        return popup
-
+            self._close_selector_popup()
+    
+            popup = tk.Toplevel(self)
+            popup.overrideredirect(True)
+            popup.transient(self)
+            popup.configure(bg=self.colors["border"])
+            popup.lift()
+    
+            x = anchor_widget.winfo_rootx()
+            y = anchor_widget.winfo_rooty() + anchor_widget.winfo_height() + 6
+            screen_w = self.winfo_screenwidth()
+            screen_h = self.winfo_screenheight()
+            width = min(width, screen_w - 40)
+            height = min(max_height, screen_h - 80)
+            x = max(20, min(x, screen_w - width - 20))
+            y = max(20, min(y, screen_h - height - 40))
+            popup.geometry(f"{width}x{height}+{x}+{y}")
+    
+            shell = tk.Frame(popup, bg=self.colors["card"], highlightthickness=1, highlightbackground=self.colors["border"])
+            shell.pack(fill="both", expand=True)
+    
+            header = tk.Frame(shell, bg="#F8FAFC")
+            header.pack(fill="x")
+            tk.Label(header, text=title, bg="#F8FAFC", fg=self.colors["text"], font=self.font_heading).pack(side="left", padx=12, pady=10)
+            self._make_button(header, "닫기", self._close_selector_popup, kind="soft").pack(side="right", padx=8, pady=6)
+    
+            self.selector_filter_var = tk.StringVar()
+            search_wrap = tk.Frame(shell, bg=self.colors["card"])
+            search_wrap.pack(fill="x", padx=12, pady=(10, 8))
+            tk.Label(search_wrap, text="검색", bg=self.colors["card"], fg=self.colors["subtext"], font=self.font_small).pack(anchor="w")
+            search_entry = ttk.Entry(search_wrap, textvariable=self.selector_filter_var, style="Modern.TEntry")
+            search_entry.pack(fill="x", pady=(4, 0), ipady=3)
+    
+            list_wrap = tk.Frame(shell, bg=self.colors["card"])
+            list_wrap.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+    
+            self.selector_canvas = tk.Canvas(list_wrap, bg=self.colors["card"], highlightthickness=0, bd=0)
+            self.selector_canvas.pack(side="left", fill="both", expand=True)
+            scroll = ttk.Scrollbar(list_wrap, orient="vertical", command=self.selector_canvas.yview)
+            scroll.pack(side="right", fill="y")
+            self.selector_canvas.configure(yscrollcommand=scroll.set)
+    
+            self.selector_inner = tk.Frame(self.selector_canvas, bg=self.colors["card"])
+            self.selector_window_id = self.selector_canvas.create_window((0, 0), window=self.selector_inner, anchor="nw")
+    
+            self.selector_inner.bind(
+                "<Configure>",
+                lambda _e: self.selector_canvas.configure(scrollregion=self.selector_canvas.bbox("all")),
+            )
+            self.selector_canvas.bind(
+                "<Configure>",
+                lambda e: self.selector_canvas.itemconfigure(self.selector_window_id, width=e.width),
+            )
+            popup.bind("<Escape>", lambda _e: self._close_selector_popup())
+            popup.bind("<FocusOut>", self._on_selector_popup_focus_out)
+            popup.bind("<MouseWheel>", self._on_selector_mousewheel)
+            popup.bind("<Button-4>", self._on_selector_mousewheel)
+            popup.bind("<Button-5>", self._on_selector_mousewheel)
+    
+            self.selector_popup = popup
+            popup.after(10, lambda: search_entry.focus_set())
+            return popup
+    
     def _on_selector_popup_focus_out(self, _event=None):
         if not self.selector_popup:
             return
@@ -1013,13 +1075,14 @@ class SubtitleGUI(tk.Tk):
     # -------------------------------------------------
     # Build sections
     # -------------------------------------------------
+    
     def _build_top_header(self, parent):
         header = tk.Frame(parent, bg=self.colors["bg"])
         header.pack(fill="x", pady=(16, 14), padx=18)
-
+    
         left = tk.Frame(header, bg=self.colors["bg"])
         left.pack(side="left", fill="x", expand=True)
-
+    
         tk.Label(
             left,
             text=APP_NAME,
@@ -1028,7 +1091,7 @@ class SubtitleGUI(tk.Tk):
             font=self.font_title,
             anchor="w",
         ).pack(anchor="w")
-
+    
         tk.Label(
             left,
             text=APP_TAGLINE,
@@ -1037,340 +1100,316 @@ class SubtitleGUI(tk.Tk):
             font=self.font_body,
             anchor="w",
         ).pack(anchor="w", pady=(4, 0))
-
-        right = tk.Frame(header, bg=self.colors["bg"])
-        right.pack(side="right")
-
-        self.header_badge = tk.Label(
-            right,
-            text=f"v{APP_VERSION}",
-            bg="#DBEAFE",
-            fg="#1D4ED8",
-            font=self.font_small,
-            padx=10,
-            pady=6,
-        )
-        self.header_badge.pack(anchor="e")
-
+    
+    
     def _build_file_card(self, parent):
         card = self._make_card(parent)
-        self._make_section_header(card, "입력 파일", "전사할 오디오 또는 비디오 파일을 선택하십시오. 결과 자막은 원본 파일과 같은 폴더에 저장됩니다.")
-
+        self._make_section_header(card, "입력 파일", "한 개 또는 여러 개의 오디오/비디오 파일을 선택할 수 있습니다. 결과는 각 원본 파일과 같은 폴더에 저장됩니다.")
+    
         body = tk.Frame(card, bg=self.colors["card"])
         body.pack(fill="x", padx=18, pady=(4, 16))
-
-        self.file_var = tk.StringVar()
-
-        ttk.Entry(body, textvariable=self.file_var, style="Modern.TEntry").pack(
-            side="left", fill="x", expand=True, padx=(0, 10), ipady=3
-        )
-        self._make_button(body, "파일 선택", self.browse_input_file, kind="secondary").pack(side="left")
-
+    
+        top = tk.Frame(body, bg=self.colors["card"])
+        top.pack(fill="x")
+        entry = ttk.Entry(top, textvariable=self.file_var, style="Modern.TEntry")
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 10), ipady=3)
+        try:
+            entry.configure(state="readonly")
+        except Exception:
+            pass
+        self._make_button(top, "파일 선택", self.browse_input_file, kind="secondary").pack(side="left", padx=(0, 8))
+        self._make_button(top, "여러 파일 추가", self.add_more_input_files, kind="soft").pack(side="left", padx=(0, 8))
+        self._make_button(top, "목록 지우기", self.clear_input_files, kind="soft").pack(side="left")
+    
+        tk.Label(
+            body,
+            textvariable=self.file_summary_var,
+            bg=self.colors["card"],
+            fg=self.colors["subtext"],
+            font=self.font_small,
+            anchor="w",
+            justify="left",
+            wraplength=980,
+        ).pack(anchor="w", pady=(8, 8))
+    
+        self.file_list_wrap = tk.Frame(body, bg=self.colors["card"])
+        self.file_list_wrap.pack(fill="x")
+        self._refresh_file_list_ui()
+    
+    
     def _build_options_card(self, parent):
         card = self._make_card(parent)
-        self._make_section_header(card, "전사 설정", "언어, 프리셋, 모델, 장치 선호를 조합해 처리 방식과 품질/속도 균형을 정합니다.")
-
+        self._make_section_header(card, "전사 설정", "전사에 대한 다양한 설정을 제공합니다. 전사 언어, 프리셋, 음성 보정, 출력 형식 등을 조정할 수 있습니다. 추가적인 세부 설정은 버튼을 눌러서 확인하십시오.")
+    
         body = tk.Frame(card, bg=self.colors["card"])
         body.pack(fill="x", padx=18, pady=(4, 16))
-
-        tk.Label(body, text="언어", bg=self.colors["card"], fg=self.colors["text"], font=self.font_body_bold).grid(
-            row=0, column=0, sticky="nw", padx=(0, 12), pady=(8, 4)
-        )
-        lang_wrap = tk.Frame(body, bg=self.colors["card"])
-        lang_wrap.grid(row=0, column=1, sticky="w", padx=(0, 18), pady=(8, 4))
-        self.lang_selector_btn = self._make_button(lang_wrap, "", self.open_language_selector, kind="secondary")
+    
+        # 핵심 설정
+        essential = tk.Frame(body, bg=self.colors["card"])
+        essential.pack(fill="x")
+    
+        lang_row = tk.Frame(essential, bg=self.colors["card"])
+        lang_row.pack(fill="x", pady=(0, 12))
+        tk.Label(lang_row, text="언어", bg=self.colors["card"], fg=self.colors["text"], font=self.font_body_bold, width=10, anchor="w").pack(side="left")
+        lang_actions = tk.Frame(lang_row, bg=self.colors["card"])
+        lang_actions.pack(side="left")
+        self.lang_selector_btn = self._make_button(lang_actions, "", self.open_language_selector, kind="secondary")
         self.lang_selector_btn.configure(textvariable=self.language_display_var, width=22, anchor="w", font=self._selected_language_font())
         self.lang_selector_btn.pack(side="left")
-        self._make_button(lang_wrap, "변경", self.open_language_selector, kind="soft").pack(side="left", padx=(8, 0))
-        tk.Label(
-            body,
-            textvariable=self.lang_note_var,
-            bg=self.colors["card"],
-            fg=self.colors["subtext"],
-            font=self.font_small,
-            anchor="w",
-            justify="left",
-            wraplength=760,
-        ).grid(row=0, column=2, columnspan=3, sticky="w", pady=(8, 4))
-
-        tk.Label(body, text="프리셋", bg=self.colors["card"], fg=self.colors["text"], font=self.font_body_bold).grid(
-            row=1, column=0, sticky="nw", padx=(0, 12), pady=(8, 4)
-        )
-        preset_wrap = tk.Frame(body, bg=self.colors["card"])
-        preset_wrap.grid(row=1, column=1, sticky="w", padx=(0, 18), pady=(8, 4))
-        self.preset_selector_btn = self._make_button(preset_wrap, "", self.open_preset_selector, kind="secondary")
+        self._make_button(lang_actions, "변경", self.open_language_selector, kind="soft").pack(side="left", padx=(8, 0))
+        tk.Label(essential, textvariable=self.lang_note_var, bg=self.colors["card"], fg=self.colors["subtext"], font=self.font_small, justify="left", wraplength=980, anchor="w").pack(anchor="w", padx=(86, 0), pady=(0, 12))
+    
+        preset_row = tk.Frame(essential, bg=self.colors["card"])
+        preset_row.pack(fill="x", pady=(0, 12))
+        tk.Label(preset_row, text="프리셋", bg=self.colors["card"], fg=self.colors["text"], font=self.font_body_bold, width=10, anchor="w").pack(side="left")
+        preset_actions = tk.Frame(preset_row, bg=self.colors["card"])
+        preset_actions.pack(side="left")
+        self.preset_selector_btn = self._make_button(preset_actions, "", self.open_preset_selector, kind="secondary")
         self.preset_selector_btn.configure(textvariable=self.preset_display_var, width=22, anchor="w")
         self.preset_selector_btn.pack(side="left")
-        self._make_button(preset_wrap, "변경", self.open_preset_selector, kind="soft").pack(side="left", padx=(8, 0))
-        self._make_button(preset_wrap, "값 자세히", self.show_preset_details, kind="soft").pack(side="left", padx=(8, 0))
-        tk.Label(
-            body,
-            textvariable=self.preset_note_var,
-            bg=self.colors["card"],
-            fg=self.colors["subtext"],
-            font=self.font_small,
-            anchor="w",
-            justify="left",
-            wraplength=760,
-        ).grid(row=1, column=2, columnspan=3, sticky="w", pady=(8, 4))
-
-        tk.Label(body, text="모델", bg=self.colors["card"], fg=self.colors["text"], font=self.font_body_bold).grid(
-            row=2, column=0, sticky="nw", padx=(0, 12), pady=(8, 4)
-        )
+        self._make_button(preset_actions, "변경", self.open_preset_selector, kind="soft").pack(side="left", padx=(8, 0))
+        self._make_button(preset_actions, "값 자세히", self.show_preset_details, kind="soft").pack(side="left", padx=(8, 0))
+        tk.Label(essential, textvariable=self.preset_note_var, bg=self.colors["card"], fg=self.colors["subtext"], font=self.font_small, justify="left", wraplength=980, anchor="w").pack(anchor="w", padx=(86, 0), pady=(0, 12))
+    
+        enh_row = tk.Frame(essential, bg=self.colors["card"])
+        enh_row.pack(fill="x", pady=(0, 6))
+        tk.Label(enh_row, text="음성 보정", bg=self.colors["card"], fg=self.colors["text"], font=self.font_body_bold, width=10, anchor="w").pack(side="left")
+        self.audio_enhance_buttons = {}
+        for idx, (value, label_text) in enumerate([("off", "끔"), ("standard", "표준"), ("strong", "강함")]):
+            btn = self._make_button(enh_row, label_text, lambda v=value: self._set_audio_enhance_level(v), kind="soft", width=8)
+            btn.pack(side="left", padx=(0, 8 if idx < 2 else 0))
+            self.audio_enhance_buttons[value] = btn
+        tk.Label(essential, text="보정은 전처리 단계에서만 적용됩니다. 표준은 일반 음성, 강함은 소음이 큰 녹음에 권장합니다.", bg=self.colors["card"], fg=self.colors["subtext"], font=self.font_small, justify="left", wraplength=980, anchor="w").pack(anchor="w", padx=(86, 0), pady=(0, 12))
+    
+        fmt_row = tk.Frame(essential, bg=self.colors["card"])
+        fmt_row.pack(fill="x", pady=(0, 6))
+        tk.Label(fmt_row, text="출력 형식", bg=self.colors["card"], fg=self.colors["text"], font=self.font_body_bold, width=10, anchor="w").pack(side="left")
+        self.output_fmt_srt_var = tk.BooleanVar(value=True)
+        self.output_fmt_txt_var = tk.BooleanVar(value=False)
+        self.output_fmt_vtt_var = tk.BooleanVar(value=False)
+        self.output_format_buttons = {}
+        for idx, fmt in enumerate(("srt", "txt", "vtt")):
+            btn = self._make_button(fmt_row, fmt.upper(), lambda v=fmt: self._toggle_output_format(v), kind="soft", width=8)
+            btn.pack(side="left", padx=(0, 8 if idx < 2 else 0))
+            self.output_format_buttons[fmt] = btn
+        tk.Label(essential, text="SRT는 기본 자막, TXT는 문장 모음, VTT는 웹/영상 플레이어 연동에 적합합니다.", bg=self.colors["card"], fg=self.colors["subtext"], font=self.font_small, justify="left", wraplength=980, anchor="w").pack(anchor="w", padx=(86, 0), pady=(0, 12))
+    
+        recommend = tk.Frame(essential, bg="#F8FAFC", highlightthickness=1, highlightbackground=self.colors["border"])
+        recommend.pack(fill="x", pady=(4, 12))
+        top = tk.Frame(recommend, bg="#F8FAFC")
+        top.pack(fill="x", padx=12, pady=(10, 6))
+        tk.Label(top, text="자동 권장 설정", bg="#F8FAFC", fg=self.colors["text"], font=self.font_body_bold).pack(side="left")
+        self._make_button(top, "권장값 적용", self.apply_recommendations, kind="soft").pack(side="right")
+        tk.Label(recommend, textvariable=self.recommendation_summary_var, bg="#F8FAFC", fg=self.colors["text"], font=self.font_body, justify="left", wraplength=980, anchor="w").pack(anchor="w", padx=12)
+        tk.Label(recommend, textvariable=self.recommendation_meta_var, bg="#F8FAFC", fg=self.colors["subtext"], font=self.font_small, justify="left", wraplength=980, anchor="w").pack(anchor="w", padx=12, pady=(4, 10))
+    
+        toggle_row = tk.Frame(body, bg=self.colors["card"])
+        toggle_row.pack(fill="x", pady=(2, 8))
+        self.advanced_toggle_btn = self._make_button(toggle_row, "▶ 세부 설정 펼치기", self._toggle_advanced_options, kind="soft")
+        self.advanced_toggle_btn.pack(side="left")
+    
+        self.advanced_options_panel = tk.Frame(body, bg=self.colors["card"])
+    
         model_wrap = tk.Frame(
-            body,
+            self.advanced_options_panel,
             bg="#F8FAFC",
             highlightthickness=1,
             highlightbackground=self.colors["border"],
             padx=12,
             pady=10,
         )
-        model_wrap.grid(row=2, column=1, sticky="we", padx=(0, 18), pady=(8, 4), columnspan=3)
-
-        text_wrap = tk.Frame(model_wrap, bg="#F8FAFC")
+        model_wrap.pack(fill="x", pady=(4, 8))
+        tk.Label(model_wrap, text="모델", bg="#F8FAFC", fg=self.colors["text"], font=self.font_body_bold).pack(anchor="w")
+    
+        model_top = tk.Frame(model_wrap, bg="#F8FAFC")
+        model_top.pack(fill="x", pady=(8, 0))
+        text_wrap = tk.Frame(model_top, bg="#F8FAFC")
         text_wrap.pack(side="left", fill="x", expand=True)
         top_line = tk.Frame(text_wrap, bg="#F8FAFC")
         top_line.pack(fill="x")
-
-        tk.Label(
-            top_line,
-            textvariable=self.model_display_var,
-            bg="#F8FAFC",
-            fg=self.colors["text"],
-            font=self.font_body_bold,
-            anchor="w",
-            justify="left",
-        ).pack(side="left", anchor="w")
-
-        self.model_cache_badge = tk.Label(
-            top_line,
-            text="확인 중",
-            bg="#E5E7EB",
-            fg="#374151",
-            font=self.font_badge,
-            padx=8,
-            pady=3,
-        )
+        tk.Label(top_line, textvariable=self.model_display_var, bg="#F8FAFC", fg=self.colors["text"], font=self.font_body_bold, anchor="w", justify="left").pack(side="left", anchor="w")
+        self.model_cache_badge = tk.Label(top_line, text="확인 중", bg="#E5E7EB", fg="#374151", font=self.font_badge, padx=8, pady=3)
         self.model_cache_badge.pack(side="left", padx=(10, 0))
-
-        tk.Label(
-            text_wrap,
-            textvariable=self.model_meta_var,
-            bg="#F8FAFC",
-            fg=self.colors["subtext"],
-            font=self.font_small,
-            anchor="w",
-            justify="left",
-            wraplength=620,
-        ).pack(anchor="w", pady=(4, 0), fill="x")
-        self.model_selector_btn = self._make_button(model_wrap, "모델 선택", self.open_model_selector, kind="soft")
+        tk.Label(text_wrap, textvariable=self.model_meta_var, bg="#F8FAFC", fg=self.colors["subtext"], font=self.font_small, anchor="w", justify="left", wraplength=620).pack(anchor="w", pady=(4, 0), fill="x")
+        self.model_selector_btn = self._make_button(model_top, "모델 선택", self.open_model_selector, kind="soft")
         self.model_selector_btn.pack(side="right", padx=(10, 0))
-
-        action_row = tk.Frame(body, bg=self.colors["card"])
-        action_row.grid(row=2, column=4, sticky="e", pady=(8, 4))
+    
+        action_row = tk.Frame(model_wrap, bg="#F8FAFC")
+        action_row.pack(fill="x", pady=(8, 0))
         self.model_download_btn = self._make_button(action_row, "모델 다운로드", self.start_model_download, kind="soft")
         self.model_download_btn.pack(side="right")
-
-        tk.Label(
-            body,
-            textvariable=self.model_state_var,
-            bg=self.colors["card"],
-            fg=self.colors["subtext"],
-            font=self.font_small,
-            anchor="w",
-            justify="left",
-            wraplength=940,
-        ).grid(row=3, column=1, columnspan=4, sticky="w", pady=(0, 4))
-
-        tk.Label(body, text="장치 선호", bg=self.colors["card"], fg=self.colors["text"], font=self.font_body_bold).grid(
-            row=4, column=0, sticky="nw", padx=(0, 12), pady=(8, 4)
-        )
-        device_wrap = tk.Frame(body, bg=self.colors["card"])
-        device_wrap.grid(row=4, column=1, sticky="w", padx=(0, 18), pady=(8, 4), columnspan=2)
-
-        self.device_buttons = {}
-        device_specs = [("auto", "자동"), ("cuda", "GPU"), ("cpu", "CPU")]
-        for idx, (value, label_text) in enumerate(device_specs):
-            btn = self._make_button(
-                device_wrap,
-                label_text,
-                lambda v=value: self._set_preferred_device(v),
-                kind="soft",
-                width=10,
-            )
-            btn.pack(side="left", padx=(0, 8 if idx < len(device_specs) - 1 else 0))
-            self.device_buttons[value] = btn
-
-        action_wrap = tk.Frame(body, bg=self.colors["card"])
-        action_wrap.grid(row=4, column=3, columnspan=2, sticky="e", pady=(8, 4))
+        tk.Label(model_wrap, textvariable=self.model_state_var, bg="#F8FAFC", fg=self.colors["subtext"], font=self.font_small, anchor="w", justify="left", wraplength=920).pack(anchor="w", pady=(8, 0))
+    
+        device_wrap = tk.Frame(self.advanced_options_panel, bg="#F8FAFC", highlightthickness=1, highlightbackground=self.colors["border"], padx=12, pady=10)
+        device_wrap.pack(fill="x", pady=(0, 8))
+        top_device = tk.Frame(device_wrap, bg="#F8FAFC")
+        top_device.pack(fill="x")
+        tk.Label(top_device, text="장치 선호", bg="#F8FAFC", fg=self.colors["text"], font=self.font_body_bold).pack(side="left")
+        action_wrap = tk.Frame(top_device, bg="#F8FAFC")
+        action_wrap.pack(side="right")
         self._make_button(action_wrap, "시스템 점검", self.start_system_check, kind="soft").pack(side="left", padx=(0, 8))
         self._make_button(action_wrap, "설정 저장", self.save_ui_settings, kind="secondary").pack(side="left")
-
-        tk.Label(
-            body,
-            textvariable=self.device_note_var,
-            bg=self.colors["card"],
-            fg=self.colors["subtext"],
-            font=self.font_small,
-            anchor="w",
-            justify="left",
-            wraplength=940,
-        ).grid(row=5, column=1, columnspan=4, sticky="w", pady=(0, 4))
-
-        body.columnconfigure(1, weight=0)
-        body.columnconfigure(2, weight=0)
-        body.columnconfigure(3, weight=1)
-        body.columnconfigure(4, weight=0)
-
+        button_row = tk.Frame(device_wrap, bg="#F8FAFC")
+        button_row.pack(fill="x", pady=(8, 0))
+        self.device_buttons = {}
+        for idx, (value, label_text) in enumerate([("auto", "자동"), ("cuda", "GPU"), ("cpu", "CPU")]):
+            btn = self._make_button(button_row, label_text, lambda v=value: self._set_preferred_device(v), kind="soft", width=10)
+            btn.pack(side="left", padx=(0, 8 if idx < 2 else 0))
+            self.device_buttons[value] = btn
+        tk.Label(device_wrap, textvariable=self.device_note_var, bg="#F8FAFC", fg=self.colors["subtext"], font=self.font_small, anchor="w", justify="left", wraplength=920).pack(anchor="w", pady=(8, 0))
+    
+        self._refresh_audio_enhance_buttons()
+        self._refresh_output_format_buttons()
+    
     def _build_status_card(self, parent):
-        card = self._make_card(parent)
-        self._make_section_header(card, "시스템 준비 상태", "전사를 위해 필요한 환경이 구축되었는지 확인합니다. 자세한 정보는 세부 상태 및 상태보고서를 참고하십시오.")
-
-        action_row = tk.Frame(card, bg=self.colors["card"])
-        action_row.pack(fill="x", padx=18, pady=(0, 10))
-
-        self.status_toggle_btn = self._make_button(action_row, "▼ 세부 상태", self.toggle_status_expand, kind="soft")
-        self.status_toggle_btn.pack(side="left")
-        self._make_button(action_row, "새로고침", self.start_system_check, kind="soft").pack(side="right")
-        self._make_button(action_row, "상태 보고서", self.show_status_details, kind="soft").pack(side="right", padx=(0, 8))
-
-        tiles = tk.Frame(card, bg=self.colors["card"])
-        tiles.pack(fill="x", padx=18, pady=(0, 10))
-
-        self.status_rows = {}
-        rows = [
-            ("model", "모델"),
-            ("engine", "엔진"),
-            ("torch", "PyTorch"),
-            ("device", "장치"),
-            ("runtime", "실행 조합"),
-        ]
-
-        for col, (key, label_text) in enumerate(rows):
-            tile = tk.Frame(
-                tiles,
+            card = self._make_card(parent)
+            self._make_section_header(card, "시스템 준비 상태", "전사를 위해 필요한 환경이 구축되었는지 확인합니다. 자세한 정보는 세부 상태 및 상태보고서를 참고하십시오.")
+    
+            action_row = tk.Frame(card, bg=self.colors["card"])
+            action_row.pack(fill="x", padx=18, pady=(0, 10))
+    
+            self.status_toggle_btn = self._make_button(action_row, "▼ 세부 상태", self.toggle_status_expand, kind="soft")
+            self.status_toggle_btn.pack(side="left")
+            self._make_button(action_row, "새로고침", self.start_system_check, kind="soft").pack(side="right")
+            self._make_button(action_row, "상태 보고서", self.show_status_details, kind="soft").pack(side="right", padx=(0, 8))
+    
+            tiles = tk.Frame(card, bg=self.colors["card"])
+            tiles.pack(fill="x", padx=18, pady=(0, 10))
+    
+            self.status_rows = {}
+            rows = [
+                ("model", "모델"),
+                ("engine", "엔진"),
+                ("torch", "PyTorch"),
+                ("device", "장치"),
+                ("runtime", "실행 조합"),
+            ]
+    
+            for col, (key, label_text) in enumerate(rows):
+                tile = tk.Frame(
+                    tiles,
+                    bg="#F8FAFC",
+                    highlightthickness=1,
+                    highlightbackground=self.colors["border"],
+                    padx=12,
+                    pady=10,
+                )
+                tile.grid(row=0, column=col, sticky="nsew", padx=(0, 8 if col < len(rows) - 1 else 0))
+                tiles.columnconfigure(col, weight=1)
+    
+                head = tk.Frame(tile, bg="#F8FAFC")
+                head.pack(fill="x")
+    
+                tk.Label(
+                    head,
+                    text=label_text,
+                    bg="#F8FAFC",
+                    fg=self.colors["subtext"],
+                    font=self.font_small,
+                    anchor="w",
+                ).pack(side="left", anchor="w")
+    
+                badge = tk.Label(
+                    head,
+                    text="대기",
+                    bg="#E5E7EB",
+                    fg="#374151",
+                    font=self.font_badge,
+                    padx=10,
+                    pady=4,
+                )
+                badge.pack(side="right")
+    
+                summary_var = tk.StringVar(value="상태를 확인하는 중입니다.")
+                meta_var = tk.StringVar(value="")
+    
+                tk.Label(
+                    tile,
+                    textvariable=summary_var,
+                    bg="#F8FAFC",
+                    fg=self.colors["text"],
+                    font=self.font_body,
+                    justify="left",
+                    wraplength=210,
+                    anchor="w",
+                ).pack(anchor="w", fill="x", pady=(10, 4))
+    
+                tk.Label(
+                    tile,
+                    textvariable=meta_var,
+                    bg="#F8FAFC",
+                    fg=self.colors["subtext"],
+                    font=self.font_small,
+                    justify="left",
+                    wraplength=210,
+                    anchor="w",
+                ).pack(anchor="w", fill="x")
+    
+                self.status_rows[key] = {"badge": badge, "summary_var": summary_var, "meta_var": meta_var}
+    
+            self.status_detail_panel = tk.Frame(
+                card,
                 bg="#F8FAFC",
                 highlightthickness=1,
                 highlightbackground=self.colors["border"],
-                padx=12,
-                pady=10,
             )
-            tile.grid(row=0, column=col, sticky="nsew", padx=(0, 8 if col < len(rows) - 1 else 0))
-            tiles.columnconfigure(col, weight=1)
-
-            head = tk.Frame(tile, bg="#F8FAFC")
-            head.pack(fill="x")
-
-            tk.Label(
-                head,
-                text=label_text,
-                bg="#F8FAFC",
-                fg=self.colors["subtext"],
-                font=self.font_small,
-                anchor="w",
-            ).pack(side="left", anchor="w")
-
-            badge = tk.Label(
-                head,
-                text="대기",
-                bg="#E5E7EB",
-                fg="#374151",
-                font=self.font_badge,
-                padx=10,
-                pady=4,
-            )
-            badge.pack(side="right")
-
-            summary_var = tk.StringVar(value="상태를 확인하는 중입니다.")
-            meta_var = tk.StringVar(value="")
-
-            tk.Label(
-                tile,
-                textvariable=summary_var,
-                bg="#F8FAFC",
-                fg=self.colors["text"],
-                font=self.font_body,
-                justify="left",
-                wraplength=210,
-                anchor="w",
-            ).pack(anchor="w", fill="x", pady=(10, 4))
-
-            tk.Label(
-                tile,
-                textvariable=meta_var,
-                bg="#F8FAFC",
-                fg=self.colors["subtext"],
-                font=self.font_small,
-                justify="left",
-                wraplength=210,
-                anchor="w",
-            ).pack(anchor="w", fill="x")
-
-            self.status_rows[key] = {"badge": badge, "summary_var": summary_var, "meta_var": meta_var}
-
-        self.status_detail_panel = tk.Frame(
-            card,
-            bg="#F8FAFC",
-            highlightthickness=1,
-            highlightbackground=self.colors["border"],
-        )
-
-        self.status_detail_labels = {}
-        for idx, (key, label_text) in enumerate(rows):
-            row = tk.Frame(self.status_detail_panel, bg="#F8FAFC")
-            row.pack(fill="x", padx=16, pady=(12 if idx == 0 else 4, 4))
-
-            tk.Label(
-                row,
-                text=label_text,
-                bg="#F8FAFC",
-                fg=self.colors["text"],
-                font=self.font_body_bold,
-                width=10,
-                anchor="nw",
-                justify="left",
-            ).pack(side="left", anchor="n", padx=(0, 12))
-
-            content = tk.Frame(row, bg="#F8FAFC")
-            content.pack(side="left", fill="x", expand=True)
-
-            summary_var = tk.StringVar(value="확인 중입니다.")
-            detail_var = tk.StringVar(value="")
-
-            tk.Label(
-                content,
-                textvariable=summary_var,
-                bg="#F8FAFC",
-                fg=self.colors["text"],
-                font=self.font_body,
-                anchor="w",
-                justify="left",
-                wraplength=900,
-            ).pack(anchor="w")
-
-            tk.Label(
-                content,
-                textvariable=detail_var,
-                bg="#F8FAFC",
-                fg=self.colors["subtext"],
-                font=self.font_small,
-                anchor="w",
-                justify="left",
-                wraplength=900,
-            ).pack(anchor="w", pady=(2, 0))
-
-            self.status_detail_labels[key] = {
-                "summary_var": summary_var,
-                "detail_var": detail_var,
-            }
-
-        self._update_status_row("model", "neutral", "모델 상태를 확인하는 중입니다.", "앱 캐시와 원격 준비 상태를 점검합니다.")
-        self._update_status_row("engine", "neutral", "전사 엔진 상태를 확인하는 중입니다.", "CTranslate2와 미디어 입력 경로를 점검합니다.")
-        self._update_status_row("torch", "neutral", "실행 라이브러리 상태를 확인하는 중입니다.", "현재 설치된 PyTorch 런타임을 점검합니다.")
-        self._update_status_row("device", "neutral", "연산 장치 상태를 확인하는 중입니다.", "GPU 감지 여부와 선호 장치를 함께 봅니다.")
-        self._update_status_row("runtime", "neutral", "실행 조합을 아직 검증하지 않았습니다.", "장치 점검 또는 첫 실행 때 실제 조합을 확정합니다.")
-        self._apply_status_expand_state()
-
+    
+            self.status_detail_labels = {}
+            for idx, (key, label_text) in enumerate(rows):
+                row = tk.Frame(self.status_detail_panel, bg="#F8FAFC")
+                row.pack(fill="x", padx=16, pady=(12 if idx == 0 else 4, 4))
+    
+                tk.Label(
+                    row,
+                    text=label_text,
+                    bg="#F8FAFC",
+                    fg=self.colors["text"],
+                    font=self.font_body_bold,
+                    width=10,
+                    anchor="nw",
+                    justify="left",
+                ).pack(side="left", anchor="n", padx=(0, 12))
+    
+                content = tk.Frame(row, bg="#F8FAFC")
+                content.pack(side="left", fill="x", expand=True)
+    
+                summary_var = tk.StringVar(value="확인 중입니다.")
+                detail_var = tk.StringVar(value="")
+    
+                tk.Label(
+                    content,
+                    textvariable=summary_var,
+                    bg="#F8FAFC",
+                    fg=self.colors["text"],
+                    font=self.font_body,
+                    anchor="w",
+                    justify="left",
+                    wraplength=900,
+                ).pack(anchor="w")
+    
+                tk.Label(
+                    content,
+                    textvariable=detail_var,
+                    bg="#F8FAFC",
+                    fg=self.colors["subtext"],
+                    font=self.font_small,
+                    anchor="w",
+                    justify="left",
+                    wraplength=900,
+                ).pack(anchor="w", pady=(2, 0))
+    
+                self.status_detail_labels[key] = {
+                    "summary_var": summary_var,
+                    "detail_var": detail_var,
+                }
+    
+            self._update_status_row("model", "neutral", "모델 상태를 확인하는 중입니다.", "앱 캐시와 원격 준비 상태를 점검합니다.")
+            self._update_status_row("engine", "neutral", "전사 엔진 상태를 확인하는 중입니다.", "CTranslate2와 미디어 입력 경로를 점검합니다.")
+            self._update_status_row("torch", "neutral", "실행 라이브러리 상태를 확인하는 중입니다.", "현재 설치된 PyTorch 런타임을 점검합니다.")
+            self._update_status_row("device", "neutral", "연산 장치 상태를 확인하는 중입니다.", "GPU 감지 여부와 선호 장치를 함께 봅니다.")
+            self._update_status_row("runtime", "neutral", "실행 조합을 아직 검증하지 않았습니다.", "장치 점검 또는 첫 실행 때 실제 조합을 확정합니다.")
+            self._apply_status_expand_state()
+    
     def _build_log(self, parent):
         card = self._make_card(parent)
         self._make_section_header(card, "작업 로그", "다운로드, 실행 준비, 전사 진행, 저장 결과를 시간순으로 기록합니다.")
@@ -1627,6 +1666,7 @@ class SubtitleGUI(tk.Tk):
             self.model_state_var.set("선택 모델이 아직 로컬에 없습니다. 지금 수동으로 받거나, 실행 시 필요한 시점에 자동으로 받을 수 있습니다.")
             self.model_download_btn.configure(text="모델 다운로드", state="normal")
 
+    
     def _update_live_resource_ui(self, info: dict):
         self.live_resource_data = dict(info)
         self._set_badge(self.resource_badge, info.get("pressure_label", "정보 없음"), info.get("level", "neutral"))
@@ -1641,6 +1681,21 @@ class SubtitleGUI(tk.Tk):
         meta = f"GPU {info.get('gpu_name', '감지되지 않음')} · 마지막 갱신 {info.get('timestamp_text', '-')}"
         self.resource_summary_var.set(summary)
         self.resource_meta_var.set(meta)
+
+        if self.base_status_details:
+            self.status_details["resources"] = (
+                f"실시간 자원 상태: {info.get('pressure_label', '정보 없음')}\n"
+                f"경고 요약: {info.get('alert_text', '정보 없음')}\n"
+                f"앱 CPU 점유율: {info.get('app_cpu_text', '정보 없음')}\n"
+                f"시스템 CPU 점유율: {info.get('system_cpu_text', '정보 없음')}\n"
+                f"앱 RAM: {info.get('app_ram_text', '정보 없음')}\n"
+                f"시스템 RAM: {info.get('ram_text', '정보 없음')}\n"
+                f"GPU VRAM: {info.get('vram_text', '정보 없음')}\n"
+                f"감지된 GPU: {info.get('gpu_name', '감지되지 않음')}\n"
+                f"마지막 갱신: {info.get('timestamp_text', '정보 없음')}"
+            )
+            self._update_status_row("resources", info.get("level", "neutral"), info.get("pressure_label", "정보 없음"), f"앱 CPU {info.get('app_cpu_text', '정보 없음')} · 앱 RAM {info.get('app_ram_text', '정보 없음')}")
+        self._render_status_report()
 
     def refresh_live_resource_now(self):
         try:
@@ -1677,6 +1732,10 @@ class SubtitleGUI(tk.Tk):
 
     def _clear_download_transfer_ui(self):
         self.transfer_mode = ""
+        self.status_report_window = None
+        self.status_report_text = None
+        self.status_report_refreshing = False
+        self.advanced_options_visible = False
         self.transfer_var.set("")
         self.transfer_meta_var.set("")
 
@@ -1726,48 +1785,347 @@ class SubtitleGUI(tk.Tk):
     # -------------------------------------------------
     # Settings / file actions
     # -------------------------------------------------
+    
     def _load_settings_into_ui(self):
-        lang_code = self.settings.get("language", DEFAULT_LANGUAGE)
-        self.language_value_var.set(lang_code if lang_code in {code for code, _ in LANGUAGE_OPTIONS} else DEFAULT_LANGUAGE)
-
+        lang = self.settings.get("language", DEFAULT_LANGUAGE)
+        self.language_value_var.set(lang if lang in {code for code, _ in LANGUAGE_OPTIONS} else DEFAULT_LANGUAGE)
+    
         model_id = self.settings.get("model_id", default_model_id())
         self.model_value_var.set(model_id if model_id in {m["id"] for m in MODEL_CATALOG} else default_model_id())
-
+    
         preset_id = self.settings.get("preset_id", DEFAULT_PRESET_ID)
         self.preset_value_var.set(preset_id if preset_id in {preset["id"] for preset in TRANSCRIPTION_PRESETS} else DEFAULT_PRESET_ID)
-
+    
         pref = self.settings.get("preferred_device", DEFAULT_PREFERRED_DEVICE)
         self.pref_device_value_var.set(pref if pref in {"auto", "cuda", "cpu"} else DEFAULT_PREFERRED_DEVICE)
-
+    
+        audio_level = str(self.settings.get("audio_enhance_level", DEFAULT_AUDIO_ENHANCE_LEVEL)).strip().lower()
+        self.audio_enhance_value_var.set(audio_level if audio_level in {"off", "standard", "strong"} else DEFAULT_AUDIO_ENHANCE_LEVEL)
+    
+        formats = self.settings.get("output_formats", DEFAULT_OUTPUT_FORMATS)
+        if isinstance(formats, str):
+            formats = [formats]
+        formats = {str(fmt).strip().lower() for fmt in (formats or DEFAULT_OUTPUT_FORMATS)}
+        self.output_fmt_srt_var.set("srt" in formats or not formats)
+        self.output_fmt_txt_var.set("txt" in formats)
+        self.output_fmt_vtt_var.set("vtt" in formats)
+        self._refresh_output_format_buttons()
+    
     def save_ui_settings(self):
         self.settings["language"] = self.current_lang_code()
         self.settings["model_id"] = self.current_model_id()
         self.settings["preset_id"] = self.current_preset_id()
         self.settings["preferred_device"] = self.current_preferred_device()
+        self.settings["audio_enhance_level"] = self.current_audio_enhance_level()
+        self.settings["output_formats"] = self.current_output_formats()
         save_settings(self.settings)
         self._append_log("환경 설정을 저장했습니다.")
         self._refresh_model_state_local()
-
+    
     def browse_input_file(self):
-        path = filedialog.askopenfilename(
+        paths = filedialog.askopenfilenames(
             title="입력 파일 선택",
             filetypes=[
                 ("Media Files", "*.mkv *.mp4 *.mov *.avi *.mp3 *.wav *.m4a *.flac *.ogg *.webm"),
                 ("All Files", "*.*"),
             ],
         )
-        if path:
-            self.file_var.set(path)
-
+        if paths:
+            self.set_input_files(paths)
+    
+    def add_more_input_files(self):
+        paths = filedialog.askopenfilenames(
+            title="추가 파일 선택",
+            filetypes=[
+                ("Media Files", "*.mkv *.mp4 *.mov *.avi *.mp3 *.wav *.m4a *.flac *.ogg *.webm"),
+                ("All Files", "*.*"),
+            ],
+        )
+        if paths:
+            self.add_input_files(paths)
+    
+    def set_input_files(self, paths):
+        unique = []
+        seen = set()
+        for raw in paths:
+            path = os.path.normpath(str(raw))
+            if os.path.isfile(path) and path not in seen:
+                seen.add(path)
+                unique.append(path)
+        self.input_files = unique
+        self._refresh_file_summary()
+        self._refresh_file_list_ui()
+        self._refresh_recommendation_ui()
+    
+    def add_input_files(self, paths):
+        current = list(self.input_files)
+        seen = set(current)
+        for raw in paths:
+            path = os.path.normpath(str(raw))
+            if os.path.isfile(path) and path not in seen:
+                seen.add(path)
+                current.append(path)
+        self.input_files = current
+        self._refresh_file_summary()
+        self._refresh_file_list_ui()
+        self._refresh_recommendation_ui()
+    
+    def clear_input_files(self):
+        self.input_files = []
+        self._refresh_file_summary()
+        self._refresh_file_list_ui()
+        self._refresh_recommendation_ui()
+    
+    def _remove_input_file(self, path: str):
+        self.input_files = [p for p in self.input_files if p != path]
+        self._refresh_file_summary()
+        self._refresh_file_list_ui()
+        self._refresh_recommendation_ui()
+    
+    def _refresh_file_summary(self):
+        if not self.input_files:
+            self.file_var.set("입력 파일을 선택하십시오")
+            self.file_summary_var.set("선택된 파일이 없습니다.")
+            return
+        if len(self.input_files) == 1:
+            self.file_var.set(self.input_files[0])
+        else:
+            self.file_var.set(f"{os.path.basename(self.input_files[0])} 외 {len(self.input_files)-1}개")
+        total_size = 0
+        for path in self.input_files:
+            try:
+                total_size += os.path.getsize(path)
+            except OSError:
+                pass
+        total_gb = total_size / (1024 ** 3) if total_size else 0.0
+        self.file_summary_var.set(f"총 {len(self.input_files)}개 파일 선택됨 · 합계 {total_gb:.2f} GB")
+    
+    def _refresh_file_list_ui(self):
+        if not hasattr(self, "file_list_wrap"):
+            return
+        for child in self.file_list_wrap.winfo_children():
+            child.destroy()
+        if not self.input_files:
+            tk.Label(self.file_list_wrap, text="아직 목록이 비어 있습니다.", bg=self.colors["card"], fg=self.colors["subtext"], font=self.font_small, anchor="w").pack(anchor="w")
+            return
+        for path in self.input_files:
+            row = tk.Frame(self.file_list_wrap, bg="#F8FAFC", highlightthickness=1, highlightbackground=self.colors["border"])
+            row.pack(fill="x", pady=(0, 6))
+            text_wrap = tk.Frame(row, bg="#F8FAFC")
+            text_wrap.pack(side="left", fill="x", expand=True, padx=10, pady=8)
+            tk.Label(text_wrap, text=os.path.basename(path), bg="#F8FAFC", fg=self.colors["text"], font=self.font_body_bold, anchor="w").pack(anchor="w")
+            tk.Label(text_wrap, text=path, bg="#F8FAFC", fg=self.colors["subtext"], font=self.font_small, anchor="w", justify="left", wraplength=880).pack(anchor="w", pady=(2, 0))
+            self._make_button(row, "✕", lambda p=path: self._remove_input_file(p), kind="soft", width=3).pack(side="right", padx=8, pady=8)
+    
+    def _set_audio_enhance_level(self, value: str):
+        self.audio_enhance_value_var.set(value if value in {"off", "standard", "strong"} else DEFAULT_AUDIO_ENHANCE_LEVEL)
+        self._refresh_audio_enhance_buttons()
+    
+    def _refresh_audio_enhance_buttons(self):
+        mapping = {
+            "off": "soft",
+            "standard": "soft",
+            "strong": "soft",
+        }
+        selected = self.current_audio_enhance_level()
+        for value, btn in getattr(self, "audio_enhance_buttons", {}).items():
+            palette = "primary" if value == selected else "soft"
+            bg = self.colors["accent"] if palette == "primary" else "#F1F5F9"
+            fg = "#FFFFFF" if palette == "primary" else self.colors["text"]
+            activebg = self.colors["accent_hover"] if palette == "primary" else "#E2E8F0"
+            btn.configure(bg=bg, fg=fg, activebackground=activebg, activeforeground=fg)
+    
+    def _toggle_output_format(self, value: str):
+        var = getattr(self, f"output_fmt_{value}_var", None)
+        if var is None:
+            return
+        currently_on = bool(var.get())
+        if currently_on and sum(1 for fmt in ("srt", "txt", "vtt") if bool(getattr(self, f"output_fmt_{fmt}_var").get())) <= 1:
+            return
+        var.set(not currently_on)
+        self._refresh_output_format_buttons()
+    
+    def _refresh_output_format_buttons(self):
+        selected = set(self.current_output_formats())
+        for fmt, btn in getattr(self, "output_format_buttons", {}).items():
+            palette = "primary" if fmt in selected else "soft"
+            bg = self.colors["accent"] if palette == "primary" else "#F1F5F9"
+            fg = "#FFFFFF" if palette == "primary" else self.colors["text"]
+            activebg = self.colors["accent_hover"] if palette == "primary" else "#E2E8F0"
+            btn.configure(bg=bg, fg=fg, activebackground=activebg, activeforeground=fg)
+    
+    def _toggle_advanced_options(self):
+        self.advanced_options_visible = not self.advanced_options_visible
+        if self.advanced_options_visible:
+            self.advanced_options_panel.pack(fill="x", pady=(0, 0))
+            self.advanced_toggle_btn.configure(text="▼ 세부 설정 접기")
+        else:
+            self.advanced_options_panel.pack_forget()
+            self.advanced_toggle_btn.configure(text="▶ 세부 설정 펼치기")
+    
+    def _recommendations_for_current_inputs(self) -> dict:
+        result = {
+            "summary": "파일을 선택하면 입력 특성을 바탕으로 프리셋, 음성 보정, 출력 형식을 제안합니다.",
+            "meta": "",
+            "preset_id": None,
+            "audio_enhance_level": None,
+            "output_formats": None,
+            "model_id": None,
+        }
+        if not self.input_files:
+            return result
+    
+        names = " ".join(os.path.basename(path).lower() for path in self.input_files)
+        exts = {os.path.splitext(path)[1].lower() for path in self.input_files}
+        batch_count = len(self.input_files)
+    
+        durations = []
+        try:
+            from subtitle_engine import probe_media_duration_seconds
+            for path in self.input_files[:8]:
+                d = probe_media_duration_seconds(path)
+                if d:
+                    durations.append(d)
+        except Exception:
+            durations = []
+        avg_duration = sum(durations) / len(durations) if durations else 0.0
+        total_duration = sum(durations) if durations else 0.0
+    
+        noisy_keywords = ["noise", "noisy", "live", "field", "record", "현장", "소음", "잡음", "녹음"]
+        lecture_keywords = ["lecture", "meeting", "seminar", "class", "회의", "강의", "세미나", "수업", "발표"]
+        dialogue_keywords = ["interview", "dialogue", "drama", "movie", "podcast", "인터뷰", "드라마", "영화", "대화"]
+        video_exts = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
+    
+        preset_id = "auto-balanced"
+        audio_level = "off"
+        why = []
+        if any(keyword in names for keyword in noisy_keywords):
+            preset_id = "noisy-performance"
+            audio_level = "strong"
+            why.append("파일명에 현장/잡음 계열 단서가 있어 잡음 대응 프리셋을 우선 권장했습니다.")
+        elif avg_duration >= 1200 or any(keyword in names for keyword in lecture_keywords):
+            preset_id = "lecture-meeting"
+            audio_level = "standard"
+            why.append("긴 발화 또는 강의/회의 계열로 보여 연속 발화 프리셋을 권장했습니다.")
+        elif exts & video_exts or any(keyword in names for keyword in dialogue_keywords):
+            preset_id = "dialogue-video"
+            audio_level = "standard"
+            why.append("영상 또는 대사형 콘텐츠로 보여 대사형 프리셋을 권장했습니다.")
+        else:
+            why.append("특정 단서가 강하지 않아 균형 프리셋을 유지하는 편이 안전합니다.")
+    
+        output_formats = ["srt"]
+        if batch_count >= 3:
+            output_formats.append("txt")
+            why.append("여러 파일을 한 번에 처리하므로 전체 검토용 TXT 동시 저장을 권장했습니다.")
+        if exts & video_exts:
+            output_formats.append("vtt")
+            why.append("영상 파일이 포함되어 웹/플레이어 호환용 VTT 저장을 함께 권장했습니다.")
+    
+        model_id = None
+        if self.current_preferred_device() == "cpu":
+            if total_duration >= 7200 or batch_count >= 5:
+                model_id = "small"
+                why.append("CPU 기준 작업량이 커 보여 처리 시간을 줄이기 위해 Small 모델을 권장했습니다.")
+            elif preset_id == "quality-priority":
+                model_id = "medium"
+        elif preset_id == "quality-priority" and batch_count <= 2:
+            model_id = "large-v3"
+    
+        result.update({
+            "summary": f"권장 프리셋 {get_transcription_preset(preset_id)['label']} · 음성 보정 { {'off':'끔','standard':'표준','strong':'강함'}[audio_level] } · 출력 {', '.join(fmt.upper() for fmt in output_formats)}",
+            "meta": " ".join(why),
+            "preset_id": preset_id,
+            "audio_enhance_level": audio_level,
+            "output_formats": output_formats,
+            "model_id": model_id,
+        })
+        return result
+    
+    def _refresh_recommendation_ui(self):
+        rec = self._recommendations_for_current_inputs()
+        self.recommendation_summary_var.set(rec.get("summary", ""))
+        self.recommendation_meta_var.set(rec.get("meta", ""))
+    
+    def apply_recommendations(self):
+        rec = self._recommendations_for_current_inputs()
+        preset_id = rec.get("preset_id")
+        if preset_id:
+            self._set_preset(preset_id)
+        audio_level = rec.get("audio_enhance_level")
+        if audio_level:
+            self.audio_enhance_value_var.set(audio_level)
+        output_formats = rec.get("output_formats") or list(DEFAULT_OUTPUT_FORMATS)
+        self.output_fmt_srt_var.set("srt" in output_formats)
+        self.output_fmt_txt_var.set("txt" in output_formats)
+        self.output_fmt_vtt_var.set("vtt" in output_formats)
+        model_id = rec.get("model_id")
+        if model_id and model_id in {m["id"] for m in MODEL_CATALOG}:
+            self._set_model(model_id)
+        self._refresh_audio_enhance_buttons()
+        self._refresh_output_format_buttons()
+        self._refresh_selection_hints()
+        self._append_log("자동 권장 설정을 적용했습니다.")
+    
     # -------------------------------------------------
     # Status detail window
     # -------------------------------------------------
+        
+    def _status_report_text_content(self) -> str:
+        live = self.live_resource_data or {}
+        sections = [
+            ("모델 준비 상태", self.status_details.get("model", "정보 없음")),
+            ("엔진 상태", self.status_details.get("engine", "정보 없음")),
+            ("PyTorch / CUDA", self.status_details.get("torch", "정보 없음")),
+            ("장치 판정", self.status_details.get("device", "정보 없음")),
+            ("실시간 자원", self.status_details.get("resources", "정보 없음")),
+            ("런타임", self.status_details.get("runtime", "정보 없음")),
+        ]
+        lines = [
+            "상태 보고서",
+            "=" * 72,
+            f"마지막 자원 갱신: {live.get('timestamp_text', '정보 없음')}",
+            "",
+        ]
+        for title, detail in sections:
+            lines.append(f"[{title}]")
+            lines.append(detail)
+            lines.append("")
+        return "\n".join(lines)
+
+    def _render_status_report(self):
+        if self.status_report_window is None or not self.status_report_window.winfo_exists() or self.status_report_text is None:
+            return
+        self.status_report_text.configure(state="normal")
+        self.status_report_text.delete("1.0", "end")
+        self.status_report_text.insert("1.0", self._status_report_text_content())
+        self.status_report_text.configure(state="disabled")
+
+    def _manual_refresh_status_report(self):
+        if self.status_report_refreshing:
+            return
+        self.status_report_refreshing = True
+        try:
+            self._set_status("상태 보고서를 새로고침하는 중입니다...")
+            self.refresh_live_resource_now()
+            self.start_startup_scan()
+            self._render_status_report()
+        finally:
+            self.status_report_refreshing = False
+
     def show_status_details(self):
+        if self.status_report_window is not None and self.status_report_window.winfo_exists():
+            self.status_report_window.deiconify()
+            self.status_report_window.lift()
+            self._render_status_report()
+            return
+
         detail_win = tk.Toplevel(self)
         detail_win.title("상태 보고서")
         detail_win.geometry("920x720")
         detail_win.minsize(760, 560)
         detail_win.configure(bg=self.colors["bg"])
+        self.status_report_window = detail_win
 
         outer = tk.Frame(detail_win, bg=self.colors["bg"])
         outer.pack(fill="both", expand=True, padx=16, pady=16)
@@ -1775,17 +2133,10 @@ class SubtitleGUI(tk.Tk):
         header = tk.Frame(outer, bg=self.colors["bg"])
         header.pack(fill="x", pady=(0, 12))
 
+        tk.Label(header, text="상태 보고서", bg=self.colors["bg"], fg=self.colors["text"], font=self.font_heading).pack(anchor="w")
         tk.Label(
             header,
-            text="상태 보고서",
-            bg=self.colors["bg"],
-            fg=self.colors["text"],
-            font=self.font_heading,
-        ).pack(anchor="w")
-
-        tk.Label(
-            header,
-            text="실행 환경, 모델 준비 상태, 장치 판정, 현재 자원 사용량을 한 번에 확인할 수 있습니다. 일부 오류가 있을 수 있으니 참조용으로만 활용하시기 바랍니다.",
+            text="새로고침 버튼을 누르면 현재 자원 정보와 초기 점검 결과를 다시 반영합니다. 창을 열어 둔 상태에서도 값이 계속 갱신됩니다.",
             bg=self.colors["bg"],
             fg=self.colors["subtext"],
             font=self.font_small,
@@ -1795,17 +2146,12 @@ class SubtitleGUI(tk.Tk):
 
         action_row = tk.Frame(outer, bg=self.colors["bg"])
         action_row.pack(fill="x", pady=(0, 10))
-        self._make_button(action_row, "새로고침", lambda: (self.start_startup_scan(), self.refresh_live_resource_now()), kind="soft").pack(side="right")
+        self._make_button(action_row, "새로고침", self._manual_refresh_status_report, kind="soft").pack(side="right")
 
-        wrap = tk.Frame(
-            outer,
-            bg=self.colors["card"],
-            highlightthickness=1,
-            highlightbackground=self.colors["border"],
-        )
+        wrap = tk.Frame(outer, bg=self.colors["card"], highlightthickness=1, highlightbackground=self.colors["border"])
         wrap.pack(fill="both", expand=True)
 
-        text = tk.Text(
+        text_widget = tk.Text(
             wrap,
             wrap="word",
             relief="flat",
@@ -1816,182 +2162,20 @@ class SubtitleGUI(tk.Tk):
             bg=self.colors["card"],
             fg=self.colors["text"],
         )
-        text.pack(side="left", fill="both", expand=True)
-
-        scroll = ttk.Scrollbar(wrap, orient="vertical", command=text.yview)
+        text_widget.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(wrap, orient="vertical", command=text_widget.yview)
         scroll.pack(side="right", fill="y")
-        text.configure(yscrollcommand=scroll.set)
+        text_widget.configure(yscrollcommand=scroll.set, state="disabled")
+        self.status_report_text = text_widget
 
-        live = self.live_resource_data or {}
-        live_block = (
-            f"실시간 부하 상태: {live.get('pressure_label', '정보 없음')}\n"
-            f"경고 요약: {live.get('alert_text', '정보 없음')}\n"
-            f"앱 CPU: {live.get('app_cpu_text', '정보 없음')}\n"
-            f"시스템 CPU: {live.get('system_cpu_text', '정보 없음')}\n"
-            f"앱 RAM: {live.get('app_ram_text', '정보 없음')}\n"
-            f"RAM: {live.get('ram_text', '정보 없음')}\n"
-            f"VRAM: {live.get('vram_text', '정보 없음')}\n"
-            f"장치: {live.get('gpu_name', '정보 없음')}\n"
-            f"마지막 갱신: {live.get('timestamp_text', '정보 없음')}"
-        )
+        def _cleanup_window():
+            self.status_report_window = None
+            self.status_report_text = None
+            detail_win.destroy()
 
-        preset = get_transcription_preset(self.current_preset_id())
-        sections = [
-            ("현재 전사 프리셋", f"선택 프리셋: {preset['label']}\n설명: {preset['long_note']}"),
-            ("작업 중 자원 상태", live_block),
-            ("모델", self.status_details.get("model", "정보 없음")),
-            ("엔진", self.status_details.get("engine", "정보 없음")),
-            ("PyTorch", self.status_details.get("torch", "정보 없음")),
-            ("장치", self.status_details.get("device", "정보 없음")),
-            ("시스템 자원", self.status_details.get("resources", "정보 없음")),
-            ("실행 조합", self.status_details.get("runtime", "정보 없음")),
-        ]
+        detail_win.protocol("WM_DELETE_WINDOW", _cleanup_window)
+        self._render_status_report()
 
-        for title, body in sections:
-            text.insert("end", f"{title}\n", ("heading",))
-            text.insert("end", f"{body}\n\n")
-
-        text.tag_configure("heading", font=self.font_heading, foreground=self.colors["text"])
-        text.configure(state="disabled")
-
-    # -------------------------------------------------
-    # Download confirmation dialog
-    # -------------------------------------------------
-    def _show_model_download_dialog(self, info: dict, reason: str) -> bool:
-        dialog = tk.Toplevel(self)
-        dialog.title("모델 다운로드 확인")
-        dialog.transient(self)
-        dialog.grab_set()
-        dialog.configure(bg=self.colors["bg"])
-        dialog.geometry("660x520")
-        dialog.resizable(False, False)
-
-        approved = {"value": False}
-
-        outer = tk.Frame(dialog, bg=self.colors["bg"])
-        outer.pack(fill="both", expand=True, padx=16, pady=16)
-
-        tk.Label(
-            outer,
-            text="선택 모델 다운로드",
-            bg=self.colors["bg"],
-            fg=self.colors["text"],
-            font=self.font_heading,
-            anchor="w",
-        ).pack(anchor="w")
-
-        tk.Label(
-            outer,
-            text=reason,
-            bg=self.colors["bg"],
-            fg=self.colors["subtext"],
-            font=self.font_body,
-            anchor="w",
-            justify="left",
-            wraplength=620,
-        ).pack(anchor="w", pady=(6, 12))
-
-        card = tk.Frame(
-            outer,
-            bg=self.colors["card"],
-            highlightthickness=1,
-            highlightbackground=self.colors["border"],
-            padx=16,
-            pady=14,
-        )
-        card.pack(fill="both", expand=True)
-
-        rows = [
-            ("모델", info.get("label", "알 수 없음")),
-            ("설명", info.get("long_note", "알 수 없음")),
-            ("원본", info.get("download_source", "알 수 없음")),
-            ("저장 위치", info.get("download_target_display") or self._format_display_path(info.get("download_target"))),
-            ("예상 크기", info.get("remote_size_text", "알 수 없음")),
-            ("100 Mb/s", info.get("eta_100", "알 수 없음")),
-            ("500 Mb/s", info.get("eta_500", "알 수 없음")),
-            ("1 Gb/s", info.get("eta_1000", "알 수 없음")),
-        ]
-
-        for idx, (label_text, value_text) in enumerate(rows):
-            row = tk.Frame(card, bg=self.colors["card"])
-            row.pack(fill="x", pady=(0, 8 if idx < len(rows) - 1 else 0))
-            tk.Label(row, text=label_text, bg=self.colors["card"], fg=self.colors["subtext"], font=self.font_small, width=10, anchor="nw").pack(side="left")
-            tk.Label(row, text=value_text, bg=self.colors["card"], fg=self.colors["text"], font=self.font_small, justify="left", wraplength=460, anchor="w").pack(side="left", fill="x", expand=True)
-
-        speed_var = tk.StringVar(value="초기 연결 속도를 짧게 측정하는 중입니다.")
-        speed_row = tk.Frame(card, bg=self.colors["card"])
-        speed_row.pack(fill="x", pady=(10, 0))
-        tk.Label(speed_row, text="현재 회선", bg=self.colors["card"], fg=self.colors["subtext"], font=self.font_small, width=10, anchor="nw").pack(side="left")
-
-        speed_value_wrap = tk.Frame(speed_row, bg=self.colors["card"])
-        speed_value_wrap.pack(side="left", fill="x", expand=True)
-        tk.Label(
-            speed_value_wrap,
-            textvariable=speed_var,
-            bg=self.colors["card"],
-            fg=self.colors["text"],
-            font=self.font_small,
-            justify="left",
-            wraplength=330,
-            anchor="w",
-        ).pack(side="left", fill="x", expand=True)
-
-        probe_btn = self._make_button(speed_row, "다시 측정", lambda: None, kind="soft")
-        probe_btn.pack(side="right")
-
-        def start_speed_probe():
-            probe_btn.configure(state="disabled", text="측정 중…")
-            speed_var.set("Hugging Face 연결 속도를 측정하는 중입니다.")
-
-            def worker():
-                result = probe_repo_download_speed(
-                    info.get("repo_id", ""),
-                    total_bytes=info.get("remote_size_bytes"),
-                )
-
-                def apply_result():
-                    if not dialog.winfo_exists():
-                        return
-                    if result.get("ok"):
-                        self.last_measured_speed_mbps = result.get("speed_mbps")
-                        self.last_measured_repo_id = info.get("repo_id", "")
-                        speed_var.set(
-                            f"대략 {result.get('speed_text', '알 수 없음')} · 현재 회선 기준 예상 {result.get('eta_text', '알 수 없음')}\n{result.get('message', '')}"
-                        )
-                    else:
-                        self.last_measured_speed_mbps = None
-                        self.last_measured_repo_id = ""
-                        speed_var.set(f"속도 측정 실패 · {result.get('message', '알 수 없음')}")
-                    probe_btn.configure(state="normal", text="다시 측정")
-
-                dialog.after(0, apply_result)
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        probe_btn.configure(command=start_speed_probe)
-        dialog.after(120, start_speed_probe)
-
-        footer = tk.Frame(outer, bg=self.colors["bg"])
-        footer.pack(fill="x", pady=(12, 0))
-
-        def approve():
-            approved["value"] = True
-            dialog.destroy()
-
-        def reject():
-            approved["value"] = False
-            dialog.destroy()
-
-        self._make_button(footer, "취소", reject, kind="soft").pack(side="right")
-        self._make_button(footer, "다운로드 시작", approve, kind="primary").pack(side="right", padx=(0, 8))
-
-        dialog.protocol("WM_DELETE_WINDOW", reject)
-        self.wait_window(dialog)
-        return approved["value"]
-
-    # -------------------------------------------------
-    # Startup scan / model readiness
-    # -------------------------------------------------
     def start_startup_scan(self):
         self.start_system_check()
 
@@ -2136,21 +2320,26 @@ class SubtitleGUI(tk.Tk):
     # -------------------------------------------------
     # Transcription
     # -------------------------------------------------
+    
     def start_transcription(self):
         if self.worker_thread and self.worker_thread.is_alive():
             return
 
-        in_path = self.file_var.get().strip()
-        if not in_path or not os.path.isfile(in_path):
-            messagebox.showerror("입력 파일 오류", "유효한 입력 파일을 선택하십시오.")
+        input_paths = [path for path in self.input_files if os.path.isfile(path)]
+        if not input_paths:
+            messagebox.showerror("입력 파일 오류", "유효한 입력 파일을 하나 이상 선택하십시오.")
             return
 
         model_id = self.current_model_id()
         lang_code = self.current_lang_code()
         preset_id = self.current_preset_id()
         pref = self.current_preferred_device()
+        audio_level = self.current_audio_enhance_level()
+        output_formats = self.current_output_formats()
 
         self.output_path = None
+        self.output_paths = {}
+        self.batch_results = []
         self.progress["value"] = 0
         self._clear_download_transfer_ui()
         self.open_result_btn.config(state="disabled")
@@ -2160,25 +2349,22 @@ class SubtitleGUI(tk.Tk):
 
         self._set_status("실행 준비 중입니다...")
         self._append_log("=" * 72)
-        self._append_log(f"작업 시작 | file={in_path}")
-        self._append_log(f"실행 설정 | lang={lang_code}, preset={preset_id}, model={model_id}, preferred_device={pref}")
+        self._append_log(f"작업 시작 | files={len(input_paths)}")
+        self._append_log(f"실행 설정 | lang={lang_code}, preset={preset_id}, model={model_id}, preferred_device={pref}, audio_enhance={audio_level}, outputs={output_formats}")
 
         self.worker_thread = threading.Thread(
             target=self._worker_transcription,
-            args=(in_path, lang_code, model_id, preset_id, pref),
+            args=(input_paths, lang_code, model_id, preset_id, pref, audio_level, output_formats),
             daemon=True,
         )
         self.worker_thread.start()
 
-    def _worker_transcription(self, in_path: str, lang_code: str, model_id: str, preset_id: str, pref: str):
+    def _worker_transcription(self, input_paths: list[str], lang_code: str, model_id: str, preset_id: str, pref: str, audio_level: str, output_formats: list[str]):
         def log(msg: str):
             self.msg_queue.put(("log", msg))
 
-        def progress(val: float):
-            self.msg_queue.put(("progress", val))
-
         try:
-            self.msg_queue.put(("progress", 3))
+            self.msg_queue.put(("progress", 2))
 
             info = self._ensure_model_ready(
                 model_id,
@@ -2192,6 +2378,7 @@ class SubtitleGUI(tk.Tk):
                     log=log,
                     progress=lambda payload: self.msg_queue.put(("download_progress", payload)),
                     measured_mbps=self.last_measured_speed_mbps if self.last_measured_repo_id == info.get("repo_id", "") else None,
+                    cancel_event=self.cancel_event,
                 )
                 self.msg_queue.put(("model_availability", inspect_model_availability(model_id, include_remote_meta=False)))
                 self.msg_queue.put(("progress", 10))
@@ -2206,19 +2393,45 @@ class SubtitleGUI(tk.Tk):
             self.msg_queue.put(("status", f"전사를 시작합니다... ({chosen['device']} / {chosen['compute_type']})"))
             self.msg_queue.put(("log", f"전사 실행 조합 확정: {chosen['device']} / {chosen['compute_type']}"))
 
-            out_path = run_transcription_job(
-                in_path=in_path,
-                lang_code=lang_code,
-                model_id=chosen["load_id"],
-                device=chosen["device"],
-                compute_type=chosen["compute_type"],
-                log=log,
-                progress=progress,
-                preset_id=preset_id,
-                cancel_event=self.cancel_event,
-            )
+            batch_results = []
+            total = len(input_paths)
+            for idx, in_path in enumerate(input_paths, start=1):
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    raise RuntimeError("TRANSCRIPTION_CANCELLED")
+                self.msg_queue.put(("status", f"전사 중... ({idx}/{total}) {os.path.basename(in_path)}"))
+                self.msg_queue.put(("batch_item_start", {"index": idx, "total": total, "path": in_path}))
 
-            self.msg_queue.put(("done", (out_path, chosen, model_id, lang_code, preset_id, pref)))
+                def progress(local_percent: float, index=idx):
+                    base = 12.0
+                    span = 88.0 / max(total, 1)
+                    overall = base + ((index - 1) * span) + (max(0.0, min(100.0, float(local_percent))) / 100.0) * span
+                    self.msg_queue.put(("progress", overall))
+
+                result = run_transcription_job(
+                    in_path=in_path,
+                    lang_code=lang_code,
+                    model_id=chosen["load_id"],
+                    device=chosen["device"],
+                    compute_type=chosen["compute_type"],
+                    log=log,
+                    progress=progress,
+                    preset_id=preset_id,
+                    audio_enhance_level=audio_level,
+                    output_formats=output_formats,
+                    cancel_event=self.cancel_event,
+                )
+                batch_item = {
+                    "index": idx,
+                    "total": total,
+                    "input_path": in_path,
+                    "primary_path": result["primary_path"],
+                    "saved_paths": result["saved_paths"],
+                    "effective_lang": result.get("effective_lang", lang_code),
+                }
+                batch_results.append(batch_item)
+                self.msg_queue.put(("batch_item_done", batch_item))
+
+            self.msg_queue.put(("done", {"results": batch_results, "chosen": chosen, "model_id": model_id, "lang_code": lang_code, "preset_id": preset_id, "pref": pref}))
         except Exception as e:
             self.msg_queue.put(("busy_off", None))
             if str(e) == "MODEL_DOWNLOAD_CANCELLED":
@@ -2233,27 +2446,30 @@ class SubtitleGUI(tk.Tk):
     # -------------------------------------------------
     # Result open
     # -------------------------------------------------
+    
     def open_result(self):
         if self.output_path and os.path.isfile(self.output_path):
             os.startfile(self.output_path)
-
+    
     def open_result_folder(self):
-        if self.output_path:
-            folder = os.path.dirname(self.output_path)
+        target = self.output_path
+        if target:
+            folder = os.path.dirname(target)
             if os.path.isdir(folder):
                 os.startfile(folder)
-
+    
     # -------------------------------------------------
     # Queue polling
     # -------------------------------------------------
+        
     def _poll_queue(self):
         try:
             while True:
                 kind, payload = self.msg_queue.get_nowait()
-
+    
                 if kind == "log":
                     self._append_log(payload)
-
+    
                 elif kind == "progress":
                     try:
                         percent = max(0.0, min(100.0, float(payload)))
@@ -2264,81 +2480,115 @@ class SubtitleGUI(tk.Tk):
                             self._refresh_job_clock()
                     except Exception:
                         pass
-
+    
                 elif kind == "busy_on":
                     self._progress_busy_on()
-
+    
                 elif kind == "busy_off":
                     self._progress_busy_off()
-
+    
                 elif kind == "status":
                     self._set_status(payload)
-
+    
                 elif kind == "startup_info":
                     self._apply_startup_info(payload)
                     self._set_status("시스템 상태 점검이 완료되었습니다.")
-
+    
                 elif kind == "model_availability":
                     self._apply_model_availability(payload)
-
+    
                 elif kind == "ask_model_download":
                     payload["approved"] = self._show_model_download_dialog(payload["info"], payload["reason"])
                     payload["event"].set()
-
+    
                 elif kind == "download_progress":
                     self._update_download_transfer_ui(payload)
                     self._refresh_job_clock()
-
+    
                 elif kind == "runtime_choice":
                     self._apply_runtime_choice_cards(payload)
-
+    
                 elif kind == "runtime_choice_text":
                     self.status_details["runtime"] = payload
                     self._update_status_row("runtime", "warning", payload, "자동 fallback이 필요할 수 있습니다.")
-
+                    self._render_status_report()
+    
                 elif kind == "task_finished":
                     if payload in {"model_download", "system_check"}:
                         self._finish_task(clear_transfer=False)
-
+    
+                elif kind == "batch_item_start":
+                    self._append_log(f"[{payload['index']}/{payload['total']}] 처리 시작: {payload['path']}")
+    
+                elif kind == "batch_item_done":
+                    saved = ", ".join(f"{fmt.upper()}={path}" for fmt, path in payload.get("saved_paths", {}).items())
+                    self._append_log(f"[{payload['index']}/{payload['total']}] 저장 완료: {saved}")
+                    self.output_path = payload.get("primary_path")
+                    self.output_paths = dict(payload.get("saved_paths", {}))
+                    self.open_result_btn.config(state="normal")
+                    self.open_folder_btn.config(state="normal")
+    
                 elif kind == "done":
-                    out_path, chosen, model_id, lang_code, preset_id, pref = payload
-                    self.output_path = out_path
+                    results = payload.get("results", [])
+                    chosen = payload.get("chosen", {})
+                    model_id = payload.get("model_id", self.current_model_id())
+                    lang_code = payload.get("lang_code", self.current_lang_code())
+                    preset_id = payload.get("preset_id", self.current_preset_id())
+                    pref = payload.get("pref", self.current_preferred_device())
+                    self.batch_results = list(results)
+                    if results:
+                        self.output_path = results[-1].get("primary_path")
+                        self.output_paths = dict(results[-1].get("saved_paths", {}))
                     self.progress["value"] = 100
                     self._set_status("작업이 완료되었습니다.")
                     self.open_result_btn.config(state="normal")
                     self.open_folder_btn.config(state="normal")
                     self.start_btn.config(state="normal")
-                    self._append_log(f"출력 파일 준비 완료: {out_path}")
+                    self._append_log(f"총 {len(results)}개 파일 처리 완료")
                     self.transfer_meta_var.set("전사와 저장이 완료되었습니다.")
-
+    
                     self.settings["model_id"] = model_id
                     self.settings["language"] = lang_code
                     self.settings["preset_id"] = preset_id
                     self.settings["preferred_device"] = pref
-                    self.settings["last_good_device"] = chosen["device"]
-                    self.settings["last_good_compute_type"] = chosen["compute_type"]
+                    self.settings["audio_enhance_level"] = self.current_audio_enhance_level()
+                    self.settings["output_formats"] = self.current_output_formats()
+                    self.settings["last_good_device"] = chosen.get("device", "")
+                    self.settings["last_good_compute_type"] = chosen.get("compute_type", "")
                     save_settings(self.settings)
                     self._refresh_model_state_local()
                     self._finish_task(clear_transfer=False)
-
+                    try:
+                        clear_temp_work_dir(remove_root=False)
+                    except Exception:
+                        pass
+    
                 elif kind == "cancelled":
                     self._set_status(payload)
                     self.transfer_meta_var.set(payload)
                     self._append_log(payload)
                     self._finish_task(clear_transfer=False)
-
+                    try:
+                        clear_temp_work_dir(remove_root=False)
+                    except Exception:
+                        pass
+    
                 elif kind == "error":
                     self._set_status("오류가 발생했습니다.")
                     self.transfer_meta_var.set("오류가 발생했습니다. 자세한 내용은 로그를 확인하십시오.")
                     self._append_log(payload)
                     self._finish_task(clear_transfer=False)
+                    try:
+                        clear_temp_work_dir(remove_root=False)
+                    except Exception:
+                        pass
                     messagebox.showerror("오류", payload)
-
+    
         except queue.Empty:
             pass
-
+    
         self.after(100, self._poll_queue)
-
+    
     # -------------------------------------------------
     # Apply startup info
     # -------------------------------------------------
@@ -2354,3 +2604,4 @@ class SubtitleGUI(tk.Tk):
         self._update_status_row("device", info["device"]["level"], info["device"]["summary"], info["device"].get("meta", ""))
         self._update_status_row("runtime", info["runtime"]["level"], info["runtime"]["summary"], info["runtime"].get("meta", ""))
         self._refresh_model_state_local()
+        self._render_status_report()

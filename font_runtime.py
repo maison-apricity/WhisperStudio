@@ -5,7 +5,7 @@ import os
 import tkinter.font as tkfont
 from pathlib import Path
 
-from paths import app_root
+from paths import bundled_font_dirs
 
 FR_PRIVATE = 0x10
 FR_NOT_ENUM = 0x20
@@ -14,27 +14,26 @@ _loaded_font_files = []
 
 
 
-def _font_dir() -> str:
-    return os.path.join(app_root(), "fonts")
+def _font_dirs() -> list[str]:
+    return bundled_font_dirs()
 
 
 
 def _iter_font_files() -> list[str]:
     """
-    fonts 폴더 아래의 모든 하위 폴더를 재귀적으로 탐색해
+    번들 폰트 폴더 아래의 모든 하위 폴더를 재귀적으로 탐색해
     ttf/otf/ttc/otc 파일을 반환한다.
     """
-    root = Path(_font_dir())
-    if not root.is_dir():
-        return []
-
     allowed_exts = {".ttf", ".otf", ".ttc", ".otc"}
     files: list[str] = []
-    for path in root.rglob("*"):
-        if path.is_file() and path.suffix.lower() in allowed_exts:
-            files.append(str(path))
+    for root_dir in _font_dirs():
+        root = Path(root_dir)
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            if path.is_file() and path.suffix.lower() in allowed_exts:
+                files.append(str(path))
     return files
-
 
 
 def _font_priority(path: str) -> tuple[int, int, str]:

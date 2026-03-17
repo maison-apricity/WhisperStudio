@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 
 APP_NAME = "Whisper Studio"
-APP_VERSION = "1.0.0"
+APP_VERSION = "0.9.1"
 APP_TAGLINE = "자막 생성기 : OpenAI의 Whisper를 사용하여 영상 및 음성 파일에서 자막을 생성합니다."
 
 DEFAULT_LANGUAGE = "auto"
 DEFAULT_MODEL_ID = "large-v3-turbo"
 DEFAULT_PREFERRED_DEVICE = "auto"   # auto / cuda / cpu
 DEFAULT_PRESET_ID = "auto-balanced"
+DEFAULT_AUDIO_ENHANCE_LEVEL = "off"   # off / standard / strong
+DEFAULT_OUTPUT_FORMATS = ["srt"]
 
 # transcription defaults
 BEAM_SIZE = 5

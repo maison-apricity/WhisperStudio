@@ -110,6 +110,7 @@ for pkg in [
     add_package(pkg)
 
 add_file_or_tree("settings.json", ".")
+add_file_or_tree("assets", "assets")
 add_file_or_tree("fonts", "fonts")
 add_file_or_tree("ffmpeg", "ffmpeg")
 add_file_or_tree("bin", "bin")
@@ -141,6 +142,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    icon=str(ROOT / "assets" / "icons" / "WhisperStudio.ico") if (ROOT / "assets" / "icons" / "WhisperStudio.ico").exists() else None,
 )
 
 coll = COLLECT(
