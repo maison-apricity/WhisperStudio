@@ -1,13 +1,7 @@
-*.wav
+temp/
 hf_home/
 temp/
+ffmpeg/
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.dll
-*.lib
-*.zip
-*.7z
-*.pt
-*.onnx
+.venv/
+.venv_*/
