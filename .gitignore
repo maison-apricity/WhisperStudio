@@ -1,0 +1,14 @@
+*.wav
+_internal/
+hf_home/
+temp/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.dll
+*.lib
+*.zip
+*.7z
+*.pt
+*.onnx
