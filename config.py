@@ -2,7 +2,7 @@
 
 APP_NAME = "Whisper Studio"
 APP_VERSION = "0.9.1"
-APP_TAGLINE = "자막 생성기 : OpenAI의 Whisper를 사용하여 영상 및 음성 파일에서 자막을 생성합니다."
+APP_TAGLINE = "Whisper Studio는 OpenAI의 Whisper 엔진을 사용하여 영상 및 음성 파일에서 스크립트를 전사합니다."
 
 DEFAULT_LANGUAGE = "auto"
 DEFAULT_MODEL_ID = "large-v3-turbo"

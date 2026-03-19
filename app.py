@@ -6,6 +6,19 @@ from paths import setup_runtime_environment, clear_temp_work_dir
 from font_runtime import register_private_fonts, unregister_private_fonts
 from gui import SubtitleGUI
 
+import ctypes
+
+def _enable_dpi_awareness():
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 def main():
     mp.freeze_support()
     setup_runtime_environment()

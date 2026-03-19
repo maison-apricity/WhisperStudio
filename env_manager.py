@@ -515,14 +515,24 @@ def download_model_to_cache(
     def progress_poller():
         last_size = base_size
         last_time = time.perf_counter()
+        last_nonzero_speed = measured_mbps if measured_mbps and measured_mbps > 0 else None
+
         while not stop_event.is_set():
             size_now = _dir_size_bytes(repo_root)
             now = time.perf_counter()
             elapsed = max(now - last_time, 1e-6)
             delta = max(0, size_now - last_size)
-            speed_mbps = (delta * 8.0) / (elapsed * 1_000_000.0) if delta > 0 else None
+
+            if delta > 0:
+                speed_mbps = (delta * 8.0) / (elapsed * 1_000_000.0)
+                if speed_mbps > 0:
+                    last_nonzero_speed = speed_mbps
+            else:
+                speed_mbps = last_nonzero_speed
+
             downloaded = max(0, size_now - base_size)
             payload = _download_progress_payload(downloaded, total_bytes, speed_mbps)
+
             if cancel_event is not None and cancel_event.is_set():
                 payload["message"] = "취소 요청을 받았습니다. 다운로드 프로세스를 정리하고 있습니다."
             else:
@@ -530,6 +540,7 @@ def download_model_to_cache(
                     f"{payload['downloaded_text']} / {payload['total_text']} · "
                     f"{payload['speed_text']} · 남은 시간 {payload['eta_text']}"
                 )
+
             emit_progress(payload)
             last_size = size_now
             last_time = now

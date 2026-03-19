@@ -1,8 +1,26 @@
-temp/
+# build
+dist/
+build/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# runtime
 hf_home/
 temp/
-ffmpeg/
-__pycache__/
-.venv/
-.venv_*/
-settings.json
+_internal/
+assets/
+
+# model/cache
+*.bin
+*.pt
+*.onnx
+
+# ffmpeg (배포용만 유지)
+_include/ffmpeg/
+
+# OS
+.DS_Store
+Thumbs.db

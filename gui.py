@@ -5,6 +5,7 @@ import queue
 import threading
 import traceback
 import time
+from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 import tkinter.font as tkfont
@@ -81,6 +82,7 @@ class SubtitleGUI(tk.Tk):
         self.status_report_text = None
         self.status_report_refreshing = False
         self.advanced_options_visible = False
+        self._window_icon_image = None
 
         self.language_value_var = tk.StringVar(value=DEFAULT_LANGUAGE)
         self.language_display_var = tk.StringVar(value="언어를 선택하십시오")
@@ -218,16 +220,60 @@ class SubtitleGUI(tk.Tk):
 
     def _apply_window_icon(self):
         icon_path = bundled_icon_path()
+
         if os.name == "nt":
             try:
                 import ctypes
-                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("WhisperStudio.App")
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("WhisperStudio")
             except Exception:
                 pass
+
         if not icon_path:
             return
+
+        icon_applied = False
+
         try:
-            self.iconbitmap(icon_path)
+            self.iconbitmap(default=icon_path)
+            icon_applied = True
+        except Exception:
+            try:
+                self.iconbitmap(icon_path)
+                icon_applied = True
+            except Exception:
+                pass
+
+        try:
+            png_icon_path = str(Path(icon_path).with_suffix(".png"))
+            if os.path.isfile(png_icon_path):
+                self._window_icon_image = tk.PhotoImage(file=png_icon_path)
+                self.iconphoto(True, self._window_icon_image)
+                icon_applied = True
+        except Exception:
+            pass
+
+        if icon_applied:
+            self.after(0, self._reapply_window_icon)
+
+    def _reapply_window_icon(self):
+        icon_path = bundled_icon_path()
+        if not icon_path:
+            return
+
+        try:
+            self.iconbitmap(default=icon_path)
+        except Exception:
+            try:
+                self.iconbitmap(icon_path)
+            except Exception:
+                pass
+
+        try:
+            png_icon_path = str(Path(icon_path).with_suffix(".png"))
+            if os.path.isfile(png_icon_path):
+                if self._window_icon_image is None:
+                    self._window_icon_image = tk.PhotoImage(file=png_icon_path)
+                self.iconphoto(True, self._window_icon_image)
         except Exception:
             pass
 
@@ -445,6 +491,13 @@ class SubtitleGUI(tk.Tk):
         self.job_meta_var.set(msg)
         self.job_clock_job = self.after(500, self._refresh_job_clock)
 
+    def _notify_task_busy(self, requested_label: str):
+        running = self.current_task_label or "다른 작업"
+        msg = f"{running} 진행 중입니다. 현재 {requested_label}은(는) 동시에 실행할 수 없습니다."
+        self._set_status(msg)
+        self.transfer_meta_var.set(msg)
+        self._append_log(msg)
+        self._refresh_job_clock()
     
     def _set_transcription_transfer_summary(self):
         lang_code = self.current_lang_code()
@@ -458,6 +511,11 @@ class SubtitleGUI(tk.Tk):
             f"전사 실행 · 파일 {file_count}개 · 언어 {lang_name} · 프리셋 {preset['label']} · 보정 {enhance_label} · 출력 {outputs}"
         )
         self.transfer_meta_var.set("전사 진행률 0% · 장치와 모델을 준비하는 중입니다.")
+
+    def _set_batch_transfer_summary(self, index: int, total: int, input_path: str):
+        self.transfer_mode = "transcription"
+        self.transfer_var.set(f"전사 중... ({index}/{total}) {os.path.basename(input_path)}")
+        self.transfer_meta_var.set("전사 진행률 0% · 파일을 분석하는 중입니다.")
     
     def _cancel_current_task(self):
             if not self.current_task_kind or self.cancel_event is None or self.cancel_event.is_set():
@@ -1782,15 +1840,16 @@ class SubtitleGUI(tk.Tk):
         eta = payload.get("eta_text", "알 수 없음")
         downloaded = payload.get("downloaded_text", "알 수 없음")
         total = payload.get("total_text", "알 수 없음")
-        self.transfer_var.set(f"모델 다운로드 · {downloaded} / {total}")
+
+        if self.current_task_kind == "transcription":
+            self.transfer_var.set(f"전사 준비 · 모델 다운로드 {downloaded} / {total}")
+        else:
+            self.transfer_var.set(f"모델 다운로드 · {downloaded} / {total}")
+
         self.transfer_meta_var.set(f"현재 속도 {speed} · 남은 시간 {eta} · {headline}")
 
     def _clear_download_transfer_ui(self):
         self.transfer_mode = ""
-        self.status_report_window = None
-        self.status_report_text = None
-        self.status_report_refreshing = False
-        self.advanced_options_visible = False
         self.transfer_var.set("")
         self.transfer_meta_var.set("")
 
@@ -2265,6 +2324,7 @@ class SubtitleGUI(tk.Tk):
 
     def start_system_check(self):
         if self.worker_thread and self.worker_thread.is_alive():
+            self._notify_task_busy("시스템 점검")
             return
 
         scan_settings = dict(self.settings)
@@ -2318,6 +2378,190 @@ class SubtitleGUI(tk.Tk):
         ticket["event"].wait()
         return bool(ticket.get("approved"))
 
+
+    # -------------------------------------------------
+    # Download confirmation dialog
+    # -------------------------------------------------
+    def _show_model_download_dialog(self, info: dict, reason: str) -> bool:
+        dialog = tk.Toplevel(self)
+        dialog.title("모델 다운로드 확인")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.configure(bg=self.colors["bg"])
+        dialog.resizable(False, False)
+
+        width = 700
+        height = 560
+        try:
+            self.update_idletasks()
+            x = max(self.winfo_rootx() + (self.winfo_width() - width) // 2, 0)
+            y = max(self.winfo_rooty() + (self.winfo_height() - height) // 2, 0)
+            dialog.geometry(f"{width}x{height}+{x}+{y}")
+        except Exception:
+            dialog.geometry(f"{width}x{height}")
+
+        approved = {"value": False}
+
+        outer = tk.Frame(dialog, bg=self.colors["bg"])
+        outer.pack(fill="both", expand=True, padx=16, pady=16)
+
+        tk.Label(
+            outer,
+            text="선택 모델 다운로드",
+            bg=self.colors["bg"],
+            fg=self.colors["text"],
+            font=self.font_heading,
+            anchor="w",
+        ).pack(anchor="w")
+
+        tk.Label(
+            outer,
+            text=reason,
+            bg=self.colors["bg"],
+            fg=self.colors["subtext"],
+            font=self.font_body,
+            anchor="w",
+            justify="left",
+            wraplength=width - 48,
+        ).pack(anchor="w", pady=(6, 12))
+
+        card = tk.Frame(
+            outer,
+            bg=self.colors["card"],
+            highlightthickness=1,
+            highlightbackground=self.colors["border"],
+            padx=16,
+            pady=14,
+        )
+        card.pack(fill="both", expand=True)
+
+        rows = [
+            ("모델", info.get("label", "알 수 없음")),
+            ("설명", info.get("long_note", "알 수 없음")),
+            ("원본", info.get("download_source", "알 수 없음")),
+            (
+                "저장 위치",
+                info.get("download_target_display")
+                or self._format_display_path(info.get("download_target")),
+            ),
+            ("예상 크기", info.get("remote_size_text", "알 수 없음")),
+            ("100 Mb/s", info.get("eta_100", "알 수 없음")),
+            ("500 Mb/s", info.get("eta_500", "알 수 없음")),
+            ("1 Gb/s", info.get("eta_1000", "알 수 없음")),
+        ]
+
+        for idx, (label_text, value_text) in enumerate(rows):
+            row = tk.Frame(card, bg=self.colors["card"])
+            row.pack(fill="x", pady=(0, 8 if idx < len(rows) - 1 else 0))
+            tk.Label(
+                row,
+                text=label_text,
+                bg=self.colors["card"],
+                fg=self.colors["subtext"],
+                font=self.font_small,
+                width=10,
+                anchor="nw",
+            ).pack(side="left")
+            tk.Label(
+                row,
+                text=value_text,
+                bg=self.colors["card"],
+                fg=self.colors["text"],
+                font=self.font_small,
+                justify="left",
+                wraplength=width - 240,
+                anchor="w",
+            ).pack(side="left", fill="x", expand=True)
+
+        speed_var = tk.StringVar(value="초기 연결 속도를 짧게 측정하는 중입니다.")
+        speed_row = tk.Frame(card, bg=self.colors["card"])
+        speed_row.pack(fill="x", pady=(10, 0))
+        tk.Label(
+            speed_row,
+            text="현재 회선",
+            bg=self.colors["card"],
+            fg=self.colors["subtext"],
+            font=self.font_small,
+            width=10,
+            anchor="nw",
+        ).pack(side="left")
+
+        speed_value_wrap = tk.Frame(speed_row, bg=self.colors["card"])
+        speed_value_wrap.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            speed_value_wrap,
+            textvariable=speed_var,
+            bg=self.colors["card"],
+            fg=self.colors["text"],
+            font=self.font_small,
+            justify="left",
+            wraplength=width - 300,
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+        probe_btn = self._make_button(speed_row, "다시 측정", lambda: None, kind="soft")
+        probe_btn.pack(side="right")
+
+        def start_speed_probe():
+            if not dialog.winfo_exists():
+                return
+            probe_btn.configure(state="disabled", text="측정 중…")
+            speed_var.set("Hugging Face 연결 속도를 측정하는 중입니다.")
+
+            def worker():
+                result = probe_repo_download_speed(
+                    info.get("repo_id", ""),
+                    total_bytes=info.get("remote_size_bytes"),
+                )
+
+                def apply_result():
+                    if not dialog.winfo_exists():
+                        return
+                    if result.get("ok"):
+                        self.last_measured_speed_mbps = result.get("speed_mbps")
+                        self.last_measured_repo_id = info.get("repo_id", "")
+                        speed_var.set(
+                            f"대략 {result.get('speed_text', '알 수 없음')} · 현재 회선 기준 예상 {result.get('eta_text', '알 수 없음')}\n{result.get('message', '')}"
+                        )
+                    else:
+                        self.last_measured_speed_mbps = None
+                        self.last_measured_repo_id = ""
+                        speed_var.set(f"속도 측정 실패 · {result.get('message', '알 수 없음')}")
+                    probe_btn.configure(state="normal", text="다시 측정")
+
+                try:
+                    dialog.after(0, apply_result)
+                except Exception:
+                    pass
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        probe_btn.configure(command=start_speed_probe)
+        dialog.after(120, start_speed_probe)
+
+        footer = tk.Frame(outer, bg=self.colors["bg"])
+        footer.pack(fill="x", pady=(12, 0))
+
+        def approve():
+            approved["value"] = True
+            dialog.destroy()
+
+        def reject():
+            approved["value"] = False
+            dialog.destroy()
+
+        self._make_button(footer, "취소", reject, kind="soft").pack(side="right")
+        self._make_button(footer, "다운로드 시작", approve, kind="primary").pack(side="right", padx=(0, 8))
+
+        dialog.protocol("WM_DELETE_WINDOW", reject)
+        try:
+            dialog.lift()
+            dialog.focus_force()
+        except Exception:
+            pass
+        self.wait_window(dialog)
+        return approved["value"]
+
     def _ensure_model_ready(self, model_id: str, reason: str, log) -> dict:
         info = inspect_model_availability(model_id, include_remote_meta=True)
         self.msg_queue.put(("model_availability", info))
@@ -2334,6 +2578,7 @@ class SubtitleGUI(tk.Tk):
     # -------------------------------------------------
     def start_model_download(self):
         if self.worker_thread and self.worker_thread.is_alive():
+            self._notify_task_busy("모델 다운로드")
             return
 
         model_id = self.current_model_id()
@@ -2407,6 +2652,7 @@ class SubtitleGUI(tk.Tk):
     
     def start_transcription(self):
         if self.worker_thread and self.worker_thread.is_alive():
+            self._notify_task_busy("전사 작업")
             return
 
         input_paths = [path for path in self.input_files if os.path.isfile(path)]
@@ -2465,6 +2711,7 @@ class SubtitleGUI(tk.Tk):
                     cancel_event=self.cancel_event,
                 )
                 self.msg_queue.put(("model_availability", inspect_model_availability(model_id, include_remote_meta=False)))
+                self.msg_queue.put(("transcription_transfer_reset", None))
                 self.msg_queue.put(("progress", 10))
 
             self.msg_queue.put(("status", "실행 장치를 결정하는 중입니다..."))
@@ -2554,57 +2801,65 @@ class SubtitleGUI(tk.Tk):
     
                 if kind == "log":
                     self._append_log(payload)
-    
+
                 elif kind == "progress":
                     try:
                         percent = max(0.0, min(100.0, float(payload)))
                         self.current_progress_percent = percent
                         self.progress["value"] = percent
-                        if self.current_task_kind == "transcription" and self.transfer_mode != "download":
+                        if self.current_task_kind == "transcription":
                             self.transfer_meta_var.set(f"전사 진행률 {percent:.0f}%")
                             self._refresh_job_clock()
                     except Exception:
                         pass
-    
+
                 elif kind == "busy_on":
                     self._progress_busy_on()
-    
+
                 elif kind == "busy_off":
                     self._progress_busy_off()
-    
+
                 elif kind == "status":
                     self._set_status(payload)
-    
+
                 elif kind == "startup_info":
                     self._apply_startup_info(payload)
                     self._set_status("시스템 상태 점검이 완료되었습니다.")
-    
+
                 elif kind == "model_availability":
                     self._apply_model_availability(payload)
-    
+
                 elif kind == "ask_model_download":
                     payload["approved"] = self._show_model_download_dialog(payload["info"], payload["reason"])
                     payload["event"].set()
-    
+
                 elif kind == "download_progress":
                     self._update_download_transfer_ui(payload)
                     self._refresh_job_clock()
-    
+
+                elif kind == "transcription_transfer_reset":
+                    self._set_transcription_transfer_summary()
+                    self.transfer_meta_var.set("전사 진행률 10% · 모델 준비를 마치고 실행 장치를 결정하는 중입니다.")
+
                 elif kind == "runtime_choice":
                     self._apply_runtime_choice_cards(payload)
-    
+                    if self.current_task_kind == "transcription":
+                        self._set_transcription_transfer_summary()
+                        self.transfer_meta_var.set("전사 진행률 12% · 실행 조합 검증 완료, 첫 파일 전사를 준비하는 중입니다.")
+
                 elif kind == "runtime_choice_text":
                     self.status_details["runtime"] = payload
                     self._update_status_row("runtime", "warning", payload, "자동 fallback이 필요할 수 있습니다.")
                     self._render_status_report()
-    
+
                 elif kind == "task_finished":
                     if payload in {"model_download", "system_check"}:
                         self._finish_task(clear_transfer=False)
-    
+
                 elif kind == "batch_item_start":
                     self._append_log(f"[{payload['index']}/{payload['total']}] 처리 시작: {payload['path']}")
-    
+                    self._set_batch_transfer_summary(payload["index"], payload["total"], payload["path"])
+
                 elif kind == "batch_item_done":
                     preprocess_info = payload.get("preprocess_info")
                     preprocess_summary = self._format_preprocess_summary(preprocess_info)
@@ -2617,7 +2872,7 @@ class SubtitleGUI(tk.Tk):
                     self.output_paths = dict(payload.get("saved_paths", {}))
                     self.open_result_btn.config(state="normal")
                     self.open_folder_btn.config(state="normal")
-    
+
                 elif kind == "done":
                     results = payload.get("results", [])
                     chosen = payload.get("chosen", {})
@@ -2635,8 +2890,10 @@ class SubtitleGUI(tk.Tk):
                     self.open_folder_btn.config(state="normal")
                     self.start_btn.config(state="normal")
                     self._append_log(f"총 {len(results)}개 파일 처리 완료")
+                    self.transfer_mode = "transcription"
+                    self.transfer_var.set(f"전사 완료 · 총 {len(results)}개 파일")
                     self.transfer_meta_var.set("전사와 저장이 완료되었습니다.")
-    
+
                     self.settings["model_id"] = model_id
                     self.settings["language"] = lang_code
                     self.settings["preset_id"] = preset_id
@@ -2652,9 +2909,10 @@ class SubtitleGUI(tk.Tk):
                         clear_temp_work_dir(remove_root=False)
                     except Exception:
                         pass
-    
+
                 elif kind == "cancelled":
                     self._set_status(payload)
+                    self.transfer_var.set("작업 취소")
                     self.transfer_meta_var.set(payload)
                     self._append_log(payload)
                     self._finish_task(clear_transfer=False)
@@ -2662,9 +2920,10 @@ class SubtitleGUI(tk.Tk):
                         clear_temp_work_dir(remove_root=False)
                     except Exception:
                         pass
-    
+
                 elif kind == "error":
                     self._set_status("오류가 발생했습니다.")
+                    self.transfer_var.set("작업 오류")
                     self.transfer_meta_var.set("오류가 발생했습니다. 자세한 내용은 로그를 확인하십시오.")
                     self._append_log(payload)
                     self._finish_task(clear_transfer=False)
