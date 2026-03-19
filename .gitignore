@@ -11,7 +11,6 @@ __pycache__/
 hf_home/
 temp/
 _internal/
-assets/
 
 # model/cache
 *.bin
