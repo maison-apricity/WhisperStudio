@@ -206,16 +206,14 @@ WhisperStudio/
 │  └─ ffmpeg/
 ├─ hf_home/
 ├─ temp/
-├─ fonts/
-├─ licenses/
 └─ settings.json
 ```
 
 ### 설명
+- `WhisperStudio.exe` : 프로그램 파일
+- `_include/` : 프로그램 실행에 필요한 모든 파일이 포함된 폴더
 - `hf_home/` : 모델 캐시 및 Hugging Face 관련 데이터
 - `temp/` : 전사를 위한 오디오 추출 중 생성되는 임시 파일이며, 프로그램 종료 시 가능한 범위에서 정리됩니다.
-- `fonts/` : 앱에서 사용하는 번들 폰트
-- `licenses/` : 포함 라이브러리 및 구성요소 라이선스
 - `settings.json` : 사용자 설정 저장 파일
 
 ---
