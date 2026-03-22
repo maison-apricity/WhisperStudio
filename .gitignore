@@ -26,3 +26,6 @@ Thumbs.db
 
 #setting
 settings.json
+
+#backup
+*.bak.*

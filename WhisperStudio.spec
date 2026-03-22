@@ -45,11 +45,6 @@ hiddenimports = [
     "multiprocessing.popen_spawn_win32",
     "queue",
 
-    "tkinter",
-    "tkinter.ttk",
-    "tkinter.filedialog",
-    "tkinter.font",
-    "tkinter.messagebox",
 
     "onnxruntime",
     "onnxruntime.capi",

@@ -10,8 +10,8 @@ import traceback
 import ctypes
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QRect, QSize
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient, QPixmap
+from PySide6.QtCore import Qt, QTimer, QRect
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -70,17 +70,11 @@ from settings_manager import load_settings, save_settings
 from subtitle_engine import probe_media_duration_seconds, run_transcription_job
 
 
-DWM_SYSTEMBACKDROP_TYPE = 38
-DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-DWMWA_REDIRECTIONBITMAP_ALPHA = 40
-DWMSBT_AUTO = 0
-DWMSBT_NONE = 1
-DWMSBT_MAINWINDOW = 2
-DWMSBT_TRANSIENTWINDOW = 3
-DWMSBT_TABBEDWINDOW = 4
-WM_DWMCOMPOSITIONCHANGED = 0x031E
-WM_THEMECHANGED = 0x031A
-WM_SETTINGCHANGE = 0x001A
+GWL_EXSTYLE = -20
+WS_EX_LAYERED = 0x00080000
+WS_EX_APPWINDOW = 0x00040000
+WS_EX_NOREDIRECTIONBITMAP = 0x00200000
+LWA_ALPHA = 0x00000002
 
 
 class MARGINS(ctypes.Structure):
@@ -93,27 +87,30 @@ class MARGINS(ctypes.Structure):
 
 
 COLOR = {
-    "shell": QColor(248, 244, 250, 186),
-    "shell_edge": QColor(255, 255, 255, 72),
-    "panel_top": QColor(255, 255, 255, 38),
-    "panel_mid": QColor(250, 247, 252, 28),
-    "panel_bottom": QColor(246, 241, 249, 22),
-    "panel_gloss": QColor(255, 255, 255, 64),
-    "panel_edge": QColor(255, 255, 255, 54),
-    "panel_edge_inner": QColor(255, 255, 255, 24),
-    "panel_shadow": QColor(72, 44, 96, 18),
-    "text": QColor(44, 37, 54),
-    "muted": QColor(103, 94, 114),
-    "soft": QColor(126, 118, 136),
+    "shell": QColor(0, 0, 0, 0),
+    "shell_edge": QColor(255, 255, 255, 26),
+    "panel_top": QColor(255, 255, 255, 154),
+    "panel_mid": QColor(255, 255, 255, 118),
+    "panel_bottom": QColor(255, 255, 255, 88),
+    "panel_gloss": QColor(255, 255, 255, 78),
+    "panel_edge": QColor(255, 255, 255, 152),
+    "panel_edge_inner": QColor(255, 255, 255, 186),
+    "panel_shadow": QColor(28, 18, 30, 30),
+    "plain_fill": QColor(255, 255, 255, 116),
+    "plain_fill_bottom": QColor(255, 255, 255, 92),
+    "plain_edge": QColor(255, 255, 255, 128),
+    "text": QColor(46, 38, 49),
+    "muted": QColor(96, 86, 102),
+    "soft": QColor(124, 113, 130),
     "accent": QColor(244, 153, 124),
-    "accent_2": QColor(201, 138, 255),
-    "accent_3": QColor(111, 196, 255),
+    "accent_2": QColor(233, 133, 173),
+    "accent_3": QColor(241, 190, 140),
     "success": QColor(88, 176, 129),
     "warning": QColor(214, 155, 82),
     "danger": QColor(216, 112, 112),
     "info": QColor(112, 159, 219),
     "neutral": QColor(168, 157, 172),
-    "track": QColor(255, 255, 255, 90),
+    "track": QColor(255, 255, 255, 58),
     "fill": QColor(244, 153, 124),
 }
 
@@ -151,7 +148,7 @@ def open_path(path: str) -> None:
     subprocess.Popen(["xdg-open", path])
 
 
-def apply_windows_backdrop(widget: QWidget) -> None:
+def disable_windows_backdrop(widget: QWidget) -> None:
     if os.name != "nt":
         return
     try:
@@ -160,179 +157,39 @@ def apply_windows_backdrop(widget: QWidget) -> None:
         return
 
     try:
-        margins = MARGINS(-1, -1, -1, -1)
+        margins = MARGINS(0, 0, 0, 0)
         ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
     except Exception:
         pass
 
     try:
-        dark = ctypes.c_int(0)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(dark), ctypes.sizeof(dark))
-    except Exception:
-        pass
-
-    for backdrop in (DWMSBT_TRANSIENTWINDOW, DWMSBT_MAINWINDOW):
-        try:
-            value = ctypes.c_int(backdrop)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, DWM_SYSTEMBACKDROP_TYPE, ctypes.byref(value), ctypes.sizeof(value))
-            break
-        except Exception:
-            continue
-
-    try:
-        alpha = ctypes.c_int(1)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_REDIRECTIONBITMAP_ALPHA, ctypes.byref(alpha), ctypes.sizeof(alpha))
+        value = ctypes.c_int(1)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(value), ctypes.sizeof(value))
     except Exception:
         pass
 
 
-_TEXTURE_CACHE: dict[tuple[int, int], QPixmap] = {}
-
-
-def _build_frost_texture(size: int = 160, tint: int = 0) -> QPixmap:
-    key = (size, tint)
-    if key in _TEXTURE_CACHE:
-        return _TEXTURE_CACHE[key]
-    pix = QPixmap(size, size)
-    pix.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pix)
-    try:
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        for y in range(0, size, 6):
-            for x in range(0, size, 6):
-                seed = (x * 92821 + y * 68917 + tint * 131) % 97
-                if seed % 5 == 0:
-                    a = 6 + seed % 16
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QColor(255, 255 - tint, 255, a))
-                    painter.drawEllipse(x, y, 2 + seed % 3, 2 + seed % 3)
-                elif seed % 7 == 0:
-                    painter.setPen(QPen(QColor(255, 245, 255, 6 + seed % 10), 1.0))
-                    painter.drawLine(x, y, x + 3, y + 1)
-        for i in range(0, size, 20):
-            glow = QRadialGradient(i + 10, (i * 7) % size, 28)
-            glow.setColorAt(0.0, QColor(255, 255, 255, 12))
-            glow.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(glow)
-            painter.drawEllipse(i - 12, (i * 7) % size - 12, 56, 56)
-    finally:
-        painter.end()
-    _TEXTURE_CACHE[key] = pix
-    return pix
-
-
-def paint_frost_texture(painter: QPainter, rect: QRect, opacity: float = 0.12, tint: int = 0) -> None:
-    if rect.width() <= 0 or rect.height() <= 0:
+def enable_true_layered_window(widget: QWidget) -> None:
+    if os.name != "nt":
         return
-    tex = _build_frost_texture(168, tint)
-    painter.save()
-    painter.setOpacity(opacity)
-    painter.drawTiledPixmap(rect, tex)
-    painter.restore()
+    try:
+        hwnd = int(widget.winId())
+    except Exception:
+        return
 
+    disable_windows_backdrop(widget)
 
-def draw_glass_button(painter: QPainter, rect: QRect, *, radius: int, role: str, hovered: bool, pressed: bool, checked: bool, enabled: bool):
-    path = QPainterPath()
-    path.addRoundedRect(rect.adjusted(1, 1, -1, -1), radius, radius)
+    try:
+        user32 = ctypes.windll.user32
+        get_window_long = getattr(user32, "GetWindowLongW")
+        set_window_long = getattr(user32, "SetWindowLongW")
+        ex_style = get_window_long(hwnd, GWL_EXSTYLE)
+        ex_style |= WS_EX_LAYERED | WS_EX_APPWINDOW
+        ex_style &= ~WS_EX_NOREDIRECTIONBITMAP
+        set_window_long(hwnd, GWL_EXSTYLE, ex_style)
+    except Exception:
+        pass
 
-    if role == "primary" or checked:
-        base = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-        base.setColorAt(0.0, QColor(255, 194, 210, 214 if enabled else 148))
-        base.setColorAt(0.45, QColor(241, 157, 199, 206 if enabled else 144))
-        base.setColorAt(1.0, QColor(155, 207, 255, 196 if enabled else 138))
-        edge = QColor(255, 255, 255, 110 if enabled else 70)
-    elif role == "danger":
-        base = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-        base.setColorAt(0.0, QColor(255, 255, 255, 42 if enabled else 22))
-        base.setColorAt(1.0, QColor(255, 207, 207, 32 if enabled else 18))
-        edge = QColor(255, 184, 184, 82 if enabled else 42)
-    else:
-        base = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-        base.setColorAt(0.0, QColor(255, 255, 255, 48 if enabled else 22))
-        base.setColorAt(0.5, QColor(255, 255, 255, 30 if enabled else 16))
-        base.setColorAt(1.0, QColor(240, 232, 246, 24 if enabled else 12))
-        edge = QColor(255, 255, 255, 82 if enabled else 36)
-
-    if hovered and enabled:
-        boost = QRadialGradient(rect.center(), max(rect.width(), rect.height()) * 0.9)
-        boost.setColorAt(0.0, QColor(255, 255, 255, 18))
-        boost.setColorAt(1.0, QColor(255, 255, 255, 0))
-    else:
-        boost = None
-
-    if pressed and enabled:
-        painter.save()
-        painter.setOpacity(0.94)
-
-    painter.fillPath(path, base)
-    painter.save()
-    painter.setClipPath(path)
-    sheen = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.top() + rect.height() * 0.5)
-    sheen.setColorAt(0.0, QColor(255, 255, 255, 76 if enabled else 26))
-    sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
-    painter.fillRect(rect, sheen)
-    bottom = QLinearGradient(rect.left(), rect.bottom(), rect.left(), rect.bottom() - rect.height() * 0.45)
-    bottom.setColorAt(0.0, QColor(120, 96, 150, 20 if enabled else 10))
-    bottom.setColorAt(1.0, QColor(255, 255, 255, 0))
-    painter.fillRect(rect, bottom)
-    paint_frost_texture(painter, rect.adjusted(2, 2, -2, -2), 0.14 if role == "soft" else 0.10, 8 if role == "primary" else 0)
-    if boost is not None:
-        painter.fillRect(rect, boost)
-    painter.restore()
-
-    painter.setPen(QPen(edge, 1.0))
-    painter.drawPath(path)
-    inner = rect.adjusted(2, 2, -2, -2)
-    inner_path = QPainterPath()
-    inner_path.addRoundedRect(inner, max(0, radius - 2), max(0, radius - 2))
-    painter.setPen(QPen(QColor(255, 255, 255, 24 if enabled else 10), 1.0))
-    painter.drawPath(inner_path)
-
-    if pressed and enabled:
-        painter.restore()
-
-
-class TexturedButton(QPushButton):
-    def __init__(self, text: str, role: str = "soft", radius: int = 16, parent: QWidget | None = None):
-        super().__init__(text, parent)
-        self.role = role
-        self.radius = radius
-        self._hovered = False
-        self._pressed = False
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setCheckable(False)
-        self.setMinimumHeight(42)
-        self.setStyleSheet("background: transparent; border: none;")
-
-    def enterEvent(self, event):
-        self._hovered = True
-        self.update()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self._hovered = False
-        self.update()
-        super().leaveEvent(event)
-
-    def mousePressEvent(self, event):
-        self._pressed = True
-        self.update()
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self._pressed = False
-        self.update()
-        super().mouseReleaseEvent(event)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        draw_glass_button(painter, self.rect(), radius=self.radius, role=self.role, hovered=self._hovered, pressed=self._pressed, checked=self.isChecked(), enabled=self.isEnabled())
-        painter.setPen(QPen(QColor(255,255,255,244) if self.role == "primary" or self.isChecked() else QColor(58,46,62,242 if self.isEnabled() else 120)))
-        painter.setFont(self.font())
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
-        painter.end()
 
 
 class FrostedPanel(QFrame):
@@ -340,12 +197,77 @@ class FrostedPanel(QFrame):
         super().__init__(parent)
         self._radius = radius
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(30)
-        shadow.setOffset(0, 12)
+        shadow.setBlurRadius(34)
+        shadow.setOffset(0, 14)
         shadow.setColor(COLOR["panel_shadow"])
         self.setGraphicsEffect(shadow)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            rect = self.rect().adjusted(1, 1, -1, -1)
+            if rect.width() <= 2 or rect.height() <= 2:
+                return
+
+            path = QPainterPath()
+            path.addRoundedRect(rect, self._radius, self._radius)
+
+            base = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
+            base.setColorAt(0.0, COLOR["panel_top"])
+            base.setColorAt(0.48, COLOR["panel_mid"])
+            base.setColorAt(1.0, COLOR["panel_bottom"])
+            painter.fillPath(path, base)
+
+            blush = QRadialGradient(rect.center().x(), rect.top() + rect.height() * 0.18, rect.width() * 0.78)
+            blush.setColorAt(0.0, QColor(255, 246, 251, 34))
+            blush.setColorAt(0.55, QColor(255, 223, 233, 18))
+            blush.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.save()
+            painter.setClipPath(path)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(blush)
+            painter.drawRoundedRect(rect, self._radius, self._radius)
+
+            sheen_rect = rect.adjusted(2, 2, -2, -rect.height() // 2)
+            sheen_path = QPainterPath()
+            sheen_path.addRoundedRect(sheen_rect, max(12, self._radius - 6), max(12, self._radius - 6))
+            sheen = QLinearGradient(sheen_rect.left(), sheen_rect.top(), sheen_rect.left(), sheen_rect.bottom())
+            sheen.setColorAt(0.0, COLOR["panel_gloss"])
+            sheen.setColorAt(0.62, QColor(255, 255, 255, 14))
+            sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.fillPath(sheen_path, sheen)
+            painter.restore()
+
+            outer_pen = QPen(COLOR["panel_edge"], 1.0)
+            painter.setPen(outer_pen)
+            painter.drawPath(path)
+
+            inner_rect = rect.adjusted(1, 1, -1, -1)
+            inner_path = QPainterPath()
+            inner_path.addRoundedRect(inner_rect, max(6, self._radius - 1), max(6, self._radius - 1))
+            inner_pen = QPen(COLOR["panel_edge_inner"], 1.0)
+            painter.setPen(inner_pen)
+            painter.drawPath(inner_path)
+
+            painter.setPen(QPen(QColor(255, 255, 255, 28), 1.0))
+            painter.drawLine(rect.left() + 14, rect.top() + 10, rect.right() - 14, rect.top() + 10)
+            painter.setPen(QPen(QColor(40, 26, 42, 14), 1.0))
+            painter.drawLine(rect.left() + 18, rect.bottom() - 10, rect.right() - 18, rect.bottom() - 10)
+        finally:
+            painter.end()
+
+
+class PlainPanel(QFrame):
+    def __init__(self, radius: int = 18, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._radius = radius
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -357,41 +279,21 @@ class FrostedPanel(QFrame):
             path = QPainterPath()
             path.addRoundedRect(rect, self._radius, self._radius)
 
-            base = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-            base.setColorAt(0.0, QColor(255, 255, 255, 34))
-            base.setColorAt(0.38, QColor(248, 242, 252, 24))
-            base.setColorAt(1.0, QColor(240, 233, 248, 18))
-            painter.fillPath(path, base)
+            fill = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
+            fill.setColorAt(0.0, COLOR["plain_fill"])
+            fill.setColorAt(1.0, COLOR["plain_fill_bottom"])
+            painter.fillPath(path, fill)
 
             painter.save()
             painter.setClipPath(path)
-            gloss = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.top() + rect.height() * 0.45)
-            gloss.setColorAt(0.0, QColor(255, 255, 255, 72))
-            gloss.setColorAt(0.25, QColor(255, 255, 255, 18))
-            gloss.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.fillRect(rect, gloss)
-
-            bloom = QRadialGradient(rect.left() + rect.width() * 0.2, rect.top() + rect.height() * 0.15, rect.width() * 0.9)
-            bloom.setColorAt(0.0, QColor(255, 196, 223, 24))
-            bloom.setColorAt(0.45, QColor(190, 216, 255, 20))
-            bloom.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.fillRect(rect, bloom)
-
-            side_haze = QLinearGradient(rect.left(), rect.center().y(), rect.right(), rect.center().y())
-            side_haze.setColorAt(0.0, QColor(255, 255, 255, 8))
-            side_haze.setColorAt(0.5, QColor(255, 255, 255, 0))
-            side_haze.setColorAt(1.0, QColor(255, 255, 255, 10))
-            painter.fillRect(rect, side_haze)
-            paint_frost_texture(painter, rect.adjusted(2, 2, -2, -2), 0.12)
+            soft_glow = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.top() + rect.height() * 0.42)
+            soft_glow.setColorAt(0.0, QColor(255, 255, 255, 42))
+            soft_glow.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.fillRect(rect.adjusted(0, 0, 0, -rect.height() // 2), soft_glow)
             painter.restore()
 
-            painter.setPen(QPen(COLOR["panel_edge"], 1.0))
+            painter.setPen(QPen(COLOR["plain_edge"], 1.0))
             painter.drawPath(path)
-            inner = rect.adjusted(2, 2, -2, -2)
-            inner_path = QPainterPath()
-            inner_path.addRoundedRect(inner, max(0, self._radius - 2), max(0, self._radius - 2))
-            painter.setPen(QPen(COLOR["panel_edge_inner"], 1.0))
-            painter.drawPath(inner_path)
         finally:
             painter.end()
 
@@ -407,98 +309,35 @@ class BackdropSurface(QWidget):
             shell_rect = rect.adjusted(6, 6, -6, -6)
             shell_path = QPainterPath()
             shell_path.addRoundedRect(shell_rect, 32, 32)
-            shell_fill = QLinearGradient(shell_rect.left(), shell_rect.top(), shell_rect.right(), shell_rect.bottom())
-            shell_fill.setColorAt(0.0, QColor(251, 246, 252, 176))
-            shell_fill.setColorAt(0.45, QColor(245, 240, 251, 164))
-            shell_fill.setColorAt(1.0, QColor(240, 236, 248, 154))
-            painter.fillPath(shell_path, shell_fill)
             painter.setPen(QPen(COLOR["shell_edge"], 1.0))
             painter.drawPath(shell_path)
 
-            painter.save()
-            painter.setClipPath(shell_path)
+            top_haze = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.top() + rect.height() * 0.32)
+            top_haze.setColorAt(0.0, QColor(255, 250, 253, 52))
+            top_haze.setColorAt(0.7, QColor(255, 250, 253, 14))
+            top_haze.setColorAt(1.0, QColor(255, 250, 253, 0))
+            painter.fillRect(rect.adjusted(0, 0, 0, -int(rect.height() * 0.60)), top_haze)
 
-            ambient = QLinearGradient(shell_rect.topLeft(), shell_rect.bottomRight())
-            ambient.setColorAt(0.0, QColor(255, 255, 255, 44))
-            ambient.setColorAt(0.38, QColor(249, 220, 243, 28))
-            ambient.setColorAt(1.0, QColor(208, 230, 255, 26))
-            painter.fillRect(shell_rect, ambient)
-
-            orbs = [
-                (QColor(255, 180, 214, 88), QRect(shell_rect.left() - 80, shell_rect.top() + 86, 320, 320)),
-                (QColor(161, 222, 255, 74), QRect(shell_rect.right() - 330, shell_rect.top() - 20, 310, 310)),
-                (QColor(211, 170, 255, 70), QRect(shell_rect.left() + 220, shell_rect.bottom() - 250, 360, 280)),
-                (QColor(255, 214, 156, 38), QRect(shell_rect.right() - 300, shell_rect.bottom() - 230, 250, 250)),
+            blobs = [
+                (QColor(255, 160, 132, 44), QRect(int(rect.width() * 0.56), -90, 430, 320)),
+                (QColor(242, 124, 171, 34), QRect(-70, int(rect.height() * 0.18), 360, 300)),
+                (QColor(241, 185, 132, 26), QRect(int(rect.width() * 0.18), int(rect.height() * 0.70), 430, 220)),
             ]
-            for color, orb_rect in orbs:
-                orb = QRadialGradient(orb_rect.center(), max(orb_rect.width(), orb_rect.height()) * 0.52)
+            for color, blob_rect in blobs:
+                gradient = QRadialGradient(blob_rect.center(), max(blob_rect.width(), blob_rect.height()) * 0.55)
                 c0 = QColor(color)
                 c1 = QColor(color)
-                c2 = QColor(color)
-                c1.setAlpha(max(0, c1.alpha() // 2))
-                c2.setAlpha(0)
-                orb.setColorAt(0.0, c0)
-                orb.setColorAt(0.55, c1)
-                orb.setColorAt(1.0, c2)
+                c1.setAlpha(0)
+                gradient.setColorAt(0.0, c0)
+                gradient.setColorAt(1.0, c1)
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(orb)
-                painter.drawEllipse(orb_rect)
-
-            ribbons = [
-                (QRect(shell_rect.left() + 58, shell_rect.bottom() - 195, 420, 98), 18, QColor(255, 255, 255, 38), QColor(255, 181, 215, 26)),
-                (QRect(shell_rect.right() - 420, shell_rect.top() + 76, 300, 74), -26, QColor(174, 224, 255, 34), QColor(255, 255, 255, 10)),
-            ]
-            for cap_rect, angle, c0, c1 in ribbons:
-                painter.save()
-                painter.translate(cap_rect.center())
-                painter.rotate(angle)
-                local = QRect(-cap_rect.width() // 2, -cap_rect.height() // 2, cap_rect.width(), cap_rect.height())
-                cap_grad = QLinearGradient(local.topLeft(), local.bottomRight())
-                cap_grad.setColorAt(0.0, c0)
-                cap_grad.setColorAt(1.0, c1)
-                painter.setPen(QPen(QColor(255, 255, 255, 28), 1.0))
-                painter.setBrush(cap_grad)
-                painter.drawRoundedRect(local, local.height() / 2, local.height() / 2)
-                painter.restore()
-
-            ring_center_x = shell_rect.right() - 170
-            ring_center_y = shell_rect.bottom() - 110
-            outer = QRadialGradient(ring_center_x, ring_center_y, 190)
-            outer.setColorAt(0.0, QColor(255, 188, 225, 30))
-            outer.setColorAt(0.55, QColor(165, 207, 255, 26))
-            outer.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(outer)
-            painter.drawEllipse(QRect(ring_center_x - 190, ring_center_y - 190, 380, 380))
-
-            top_haze = QLinearGradient(shell_rect.left(), shell_rect.top(), shell_rect.left(), shell_rect.top() + 170)
-            top_haze.setColorAt(0.0, QColor(255, 255, 255, 62))
-            top_haze.setColorAt(0.3, QColor(255, 255, 255, 16))
-            top_haze.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.fillRect(shell_rect, top_haze)
-            paint_frost_texture(painter, shell_rect.adjusted(4, 4, -4, -4), 0.05, 8)
-            painter.restore()
+                painter.setBrush(gradient)
+                painter.drawEllipse(blob_rect)
         finally:
             painter.end()
 
 
-class SidebarButton(TexturedButton):
-    def __init__(self, text: str, parent: QWidget | None = None):
-        super().__init__(text, role="soft", radius=18, parent=parent)
-        self.setCheckable(True)
-        self.setMinimumHeight(46)
-        self.setFont(QFont(self.font().family(), self.font().pointSize(), QFont.Weight.DemiBold))
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        draw_glass_button(painter, self.rect(), radius=self.radius, role="primary" if self.isChecked() else "soft", hovered=self._hovered, pressed=self._pressed, checked=self.isChecked(), enabled=self.isEnabled())
-        painter.setPen(QPen(QColor(255,255,255,245) if self.isChecked() else QColor(62,50,66,240)))
-        painter.drawText(self.rect().adjusted(16, 0, -16, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text())
-        painter.end()
-
-
-class ChipButton(TexturedButton):
+class SidebarButton(QPushButton):
     def __init__(self, text: str, parent: QWidget | None = None):
         super().__init__(text, parent)
         self.setCheckable(True)
@@ -507,67 +346,113 @@ class ChipButton(TexturedButton):
         self.setStyleSheet(
             """
             QPushButton {
-                color: rgba(62,50,66,0.94);
-                background: rgba(255,255,255,0.16);
-                border: 1px solid rgba(255,255,255,0.30);
-                border-radius: 18px;
+                color: rgba(62,50,66,0.96);
+                background: rgba(255,255,255,0.18);
+                border: 1px solid rgba(255,255,255,0.42);
+                border-radius: 16px;
                 padding: 12px 16px;
                 text-align: left;
-                font-weight: 600;
+                font-weight: 700;
             }
             QPushButton:hover {
-                background: rgba(255,255,255,0.24);
-                border: 1px solid rgba(255,255,255,0.42);
+                background: rgba(255,255,255,0.28);
+                border: 1px solid rgba(255,255,255,0.56);
             }
             QPushButton:checked {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(244,153,124,0.74),
-                    stop:0.55 rgba(233,133,173,0.78),
-                    stop:1 rgba(111,196,255,0.74));
-                border: 1px solid rgba(255,255,255,0.72);
+                    stop:0 rgba(244,153,124,0.64),
+                    stop:1 rgba(233,133,173,0.46));
+                border: 1px solid rgba(255,255,255,0.74);
             }
             """
         )
 
 
-class ChipButton(TexturedButton):
+class ChipButton(QPushButton):
     def __init__(self, text: str, parent: QWidget | None = None):
-        super().__init__(text, role="soft", radius=14, parent=parent)
+        super().__init__(text, parent)
         self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumHeight(38)
-        self.setFont(QFont(self.font().family(), self.font().pointSize(), QFont.Weight.DemiBold))
+        self.setStyleSheet(
+            """
+            QPushButton {
+                color: rgba(62,50,66,0.96);
+                background: rgba(255,255,255,0.18);
+                border: 1px solid rgba(255,255,255,0.42);
+                border-radius: 14px;
+                padding: 8px 14px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,0.30);
+                border: 1px solid rgba(255,255,255,0.56);
+            }
+            QPushButton:checked {
+                background: rgba(244,153,124,0.44);
+                border: 1px solid rgba(255,255,255,0.74);
+            }
+            """
+        )
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        draw_glass_button(painter, self.rect(), radius=self.radius, role="primary" if self.isChecked() else self.role, hovered=self._hovered, pressed=self._pressed, checked=self.isChecked(), enabled=self.isEnabled())
-        painter.setPen(QPen(QColor(255,255,255,245) if self.isChecked() else QColor(62,50,66,240)))
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
-        painter.end()
 
-
-class SegmentedTabButton(TexturedButton):
+class SegmentedTabButton(QPushButton):
     def __init__(self, text: str, parent: QWidget | None = None):
-        super().__init__(text, role="soft", radius=18, parent=parent)
+        super().__init__(text, parent)
         self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumHeight(42)
         self.setMinimumWidth(170)
-        self.setFont(QFont(self.font().family(), self.font().pointSize(), QFont.Weight.Bold))
+        self.setStyleSheet(
+            """
+            QPushButton {
+                color: rgba(58,46,62,0.96);
+                background: rgba(255,255,255,0.14);
+                border: 1px solid rgba(255,255,255,0.42);
+                border-radius: 17px;
+                padding: 10px 20px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,0.26);
+                border: 1px solid rgba(255,255,255,0.56);
+            }
+            QPushButton:checked {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(244,153,124,0.78),
+                    stop:1 rgba(233,133,173,0.68));
+                border: 1px solid rgba(255,255,255,0.82);
+                color: rgba(38,24,33,0.98);
+            }
+            """
+        )
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        draw_glass_button(painter, self.rect(), radius=self.radius, role="primary" if self.isChecked() else "soft", hovered=self._hovered, pressed=self._pressed, checked=self.isChecked(), enabled=self.isEnabled())
-        painter.setPen(QPen(QColor(255,255,255,248) if self.isChecked() else QColor(58,46,62,244)))
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
-        painter.end()
+
+class DraggableGlassPanel(FrostedPanel):
+    def __init__(self, window: "SubtitleGUI", radius: int = 24, parent: QWidget | None = None):
+        super().__init__(radius=radius, parent=parent)
+        self.window_ref = window
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self.window_ref.isMaximized():
+            handle = self.window_ref.windowHandle()
+            if handle is not None and handle.startSystemMove():
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.window_ref.toggle_maximize_restore()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 class TitleBar(QWidget):
     def __init__(self, window: "SubtitleGUI"):
         super().__init__(window)
         self.window_ref = window
-        self.drag_offset = None
         self.setFixedHeight(64)
 
         layout = QHBoxLayout(self)
@@ -585,8 +470,10 @@ class TitleBar(QWidget):
         text_col.setSpacing(0)
         self.title_label = QLabel(APP_NAME)
         self.title_label.setObjectName("WindowTitle")
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.subtitle_label = QLabel(APP_TAGLINE)
         self.subtitle_label.setObjectName("WindowSubtitle")
+        self.subtitle_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.subtitle_label.setWordWrap(False)
         text_col.addWidget(self.title_label)
         text_col.addWidget(self.subtitle_label)
@@ -609,37 +496,34 @@ class TitleBar(QWidget):
         btn.setStyleSheet(
             """
             QToolButton {
-                color: rgba(70,58,74,0.94);
-                background: rgba(255,255,255,0.20);
-                border: 1px solid rgba(255,255,255,0.34);
+                color: rgba(70,58,74,0.96);
+                background: rgba(255,255,255,0.16);
+                border: 1px solid rgba(255,255,255,0.40);
                 border-radius: 12px;
                 min-width: 36px;
                 min-height: 36px;
             }
             QToolButton:hover {
-                background: rgba(255,255,255,0.22);
+                background: rgba(255,255,255,0.28);
+                border: 1px solid rgba(255,255,255,0.56);
             }
             """
         )
         return btn
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_offset = event.globalPosition().toPoint() - self.window_ref.frameGeometry().topLeft()
+        if event.button() == Qt.MouseButton.LeftButton and not self.window_ref.isMaximized():
+            handle = self.window_ref.windowHandle()
+            if handle is not None and handle.startSystemMove():
+                event.accept()
+                return
         super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self.drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton and not self.window_ref.isMaximized():
-            self.window_ref.move(event.globalPosition().toPoint() - self.drag_offset)
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self.drag_offset = None
-        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.window_ref.toggle_maximize_restore()
+            event.accept()
+            return
         super().mouseDoubleClickEvent(event)
 
 
@@ -729,7 +613,7 @@ class SubtitleGUI(QMainWindow):
         self.job_started_at = None
         self.transfer_mode = ""
         self.sidebar_expanded = True
-        self._backdrop_applied = False
+        self._layered_window_applied = False
 
         self.setWindowTitle(APP_NAME)
         self.resize(1440, 940)
@@ -772,18 +656,10 @@ class SubtitleGUI(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        apply_windows_backdrop(self)
-        self._backdrop_applied = True
+        if not self._layered_window_applied:
+            enable_true_layered_window(self)
+            self._layered_window_applied = True
 
-    def nativeEvent(self, eventType, message):
-        if os.name == "nt":
-            try:
-                msg = ctypes.wintypes.MSG.from_address(int(message))
-                if msg.message in {WM_DWMCOMPOSITIONCHANGED, WM_THEMECHANGED, WM_SETTINGCHANGE}:
-                    QTimer.singleShot(0, lambda: apply_windows_backdrop(self))
-            except Exception:
-                pass
-        return super().nativeEvent(eventType, message)
 
     def closeEvent(self, event):
         try:
@@ -830,73 +706,74 @@ class SubtitleGUI(QMainWindow):
         self.setStyleSheet(
             f"""
             QWidget {{
-                color: rgba(46,38,49,0.96);
+                color: rgba(46,38,49,0.97);
                 font-family: '{self.ui_font_family}';
                 background: transparent;
             }}
             QLabel#WindowTitle {{
                 font-size: 18px;
-                font-weight: 700;
+                font-weight: 800;
             }}
             QLabel#WindowSubtitle {{
-                color: rgba(104,92,110,0.84);
+                color: rgba(104,92,110,0.80);
                 font-size: 11px;
             }}
             QLabel#PageTitle, QLabel#DialogTitle {{
                 font-size: 22px;
-                font-weight: 700;
+                font-weight: 800;
             }}
             QLabel#SectionTitle {{
                 font-size: 16px;
-                font-weight: 700;
+                font-weight: 800;
             }}
             QLabel#SectionSub, QLabel#BodyText {{
-                color: rgba(96,86,102,0.92);
+                color: rgba(92,82,98,0.92);
                 font-size: 12px;
-                background: transparent;
             }}
             QLabel#MutedText {{
-                color: rgba(122,112,128,0.88);
+                color: rgba(122,112,128,0.84);
                 font-size: 11px;
-                background: transparent;
             }}
             QLabel#FormLabel {{
-                color: rgba(78,66,84,0.94);
+                color: rgba(78,66,84,0.96);
                 font-size: 12px;
-                font-weight: 600;
-                background: transparent;
+                font-weight: 700;
             }}
             QLabel#HeroValue {{
                 font-size: 18px;
-                font-weight: 700;
+                font-weight: 800;
             }}
             QLabel#StatusHeadline {{
                 font-size: 20px;
-                font-weight: 700;
+                font-weight: 800;
             }}
             QComboBox {{
-                background: rgba(255,255,255,0.20);
-                border: 1px solid rgba(255,255,255,0.42);
+                background: rgba(255,255,255,0.22);
+                border: 1px solid rgba(255,255,255,0.50);
                 border-radius: 14px;
                 padding: 10px 12px;
                 min-height: 22px;
             }}
+            QComboBox:hover {{
+                background: rgba(255,255,255,0.28);
+                border: 1px solid rgba(255,255,255,0.62);
+            }}
             QComboBox::drop-down {{
                 border: none;
                 width: 26px;
-                background: transparent;
             }}
             QComboBox QAbstractItemView {{
-                background: rgba(250,247,250,0.96);
-                border: 1px solid rgba(255,255,255,0.70);
+                background: rgba(248,245,248,0.98);
+                border: 1px solid rgba(255,255,255,0.78);
                 selection-background-color: rgba(244,153,124,0.24);
-                color: rgba(46,38,49,0.96);
+                color: rgba(46,38,49,0.98);
                 padding: 6px;
+                outline: 0;
             }}
             QListWidget, QPlainTextEdit {{
-                background: rgba(255,255,255,0.12);
-                border: 1px solid rgba(255,255,255,0.40);
-                border-radius: 18px;
+                background: rgba(255,255,255,0.20);
+                border: 1px solid rgba(255,255,255,0.50);
+                border-radius: 16px;
                 padding: 10px;
                 selection-background-color: rgba(244,153,124,0.18);
             }}
@@ -904,29 +781,30 @@ class SubtitleGUI(QMainWindow):
                 padding: 8px 10px;
                 border-radius: 10px;
                 margin: 2px 0px;
-                background: transparent;
             }}
             QListWidget::item:selected {{
-                background: rgba(244,153,124,0.18);
+                background: rgba(244,153,124,0.22);
+            }}
+            QPlainTextEdit {{
+                color: rgba(60,48,66,0.98);
             }}
             QCheckBox {{
                 spacing: 10px;
-                color: rgba(46,38,49,0.96);
-                background: transparent;
+                color: rgba(46,38,49,0.97);
             }}
             QCheckBox::indicator {{
                 width: 18px;
                 height: 18px;
                 border-radius: 6px;
-                border: 1px solid rgba(255,255,255,0.64);
-                background: rgba(255,255,255,0.22);
+                border: 1px solid rgba(255,255,255,0.58);
+                background: rgba(255,255,255,0.24);
             }}
             QCheckBox::indicator:checked {{
-                background: rgba(244,153,124,0.78);
+                background: rgba(244,153,124,0.74);
             }}
             QProgressBar {{
-                background: rgba(255,255,255,0.10);
-                border: 1px solid rgba(255,255,255,0.34);
+                background: rgba(255,255,255,0.18);
+                border: 1px solid rgba(255,255,255,0.48);
                 border-radius: 11px;
                 min-height: 18px;
                 text-align: center;
@@ -936,23 +814,55 @@ class SubtitleGUI(QMainWindow):
             QProgressBar::chunk {{
                 border-radius: 10px;
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 rgba(244,153,124,0.88),
-                    stop:0.5 rgba(233,133,173,0.82),
-                    stop:1 rgba(111,196,255,0.78));
+                    stop:0 rgba(244,153,124,0.92),
+                    stop:1 rgba(233,133,173,0.86));
             }}
-            QPushButton#PrimaryButton,
-            QPushButton#SoftButton,
+            QPushButton#PrimaryButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(244,153,124,0.92),
+                    stop:1 rgba(233,133,173,0.80));
+                border: 1px solid rgba(255,255,255,0.66);
+                border-radius: 15px;
+                padding: 12px 16px;
+                color: rgba(38,24,33,0.97);
+                font-weight: 800;
+            }}
+            QPushButton#PrimaryButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(246,171,141,0.95),
+                    stop:1 rgba(238,149,186,0.84));
+            }}
+            QPushButton#SoftButton {{
+                background: rgba(255,255,255,0.18);
+                border: 1px solid rgba(255,255,255,0.48);
+                border-radius: 15px;
+                padding: 11px 14px;
+                font-weight: 700;
+                color: rgba(58,46,62,0.96);
+            }}
+            QPushButton#SoftButton:hover {{
+                background: rgba(255,255,255,0.28);
+                border: 1px solid rgba(255,255,255,0.60);
+            }}
             QPushButton#DangerButton {{
-                background: transparent;
-                border: none;
-                padding: 0px;
+                background: rgba(216,112,112,0.16);
+                border: 1px solid rgba(216,112,112,0.32);
+                border-radius: 15px;
+                padding: 11px 14px;
+                font-weight: 700;
+                color: rgba(112,54,54,0.96);
+            }}
+            QPushButton#DangerButton:hover {{
+                background: rgba(216,112,112,0.24);
+            }}
+            QPushButton:disabled {{
+                color: rgba(114,104,120,0.54);
+                background: rgba(255,255,255,0.10);
+                border: 1px solid rgba(255,255,255,0.24);
             }}
             QScrollArea {{
                 background: transparent;
                 border: none;
-            }}
-            QScrollArea > QWidget > QWidget {{
-                background: transparent;
             }}
             QScrollBar:vertical {{
                 background: transparent;
@@ -960,7 +870,7 @@ class SubtitleGUI(QMainWindow):
                 margin: 2px;
             }}
             QScrollBar::handle:vertical {{
-                background: rgba(172,160,179,0.55);
+                background: rgba(172,160,179,0.46);
                 border-radius: 6px;
                 min-height: 24px;
             }}
@@ -975,6 +885,9 @@ class SubtitleGUI(QMainWindow):
 
     def _build_ui(self):
         surface = BackdropSurface()
+        surface.setObjectName("SurfaceRoot")
+        surface.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        surface.setAutoFillBackground(False)
         self.setCentralWidget(surface)
 
         root = QVBoxLayout(surface)
@@ -985,9 +898,9 @@ class SubtitleGUI(QMainWindow):
         self.title_bar.menu_btn.hide()
         root.addWidget(self.title_bar)
 
-        tab_shell = FrostedPanel(radius=24)
-        tab_shell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        tab_layout = QHBoxLayout(tab_shell)
+        self.tab_shell = DraggableGlassPanel(self, radius=24)
+        self.tab_shell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        tab_layout = QHBoxLayout(self.tab_shell)
         tab_layout.setContentsMargins(18, 14, 18, 14)
         tab_layout.setSpacing(10)
         tab_layout.addStretch(1)
@@ -1000,8 +913,9 @@ class SubtitleGUI(QMainWindow):
         tab_layout.addStretch(1)
         build_label = QLabel(f"v{APP_VERSION}")
         build_label.setObjectName("MutedText")
+        build_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         tab_layout.addWidget(build_label, 0, Qt.AlignmentFlag.AlignRight)
-        root.addWidget(tab_shell)
+        root.addWidget(self.tab_shell)
 
         self.stack = QStackedWidget()
         root.addWidget(self.stack, 1)
@@ -1009,7 +923,7 @@ class SubtitleGUI(QMainWindow):
         self.stack.addWidget(self._build_settings_page())
         self.stack.addWidget(self._build_activity_page())
 
-        self.footer_panel = QWidget()
+        self.footer_panel = FrostedPanel(radius=26)
         self.footer_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         root.addWidget(self.footer_panel)
         self._build_footer(self.footer_panel)
@@ -1018,11 +932,14 @@ class SubtitleGUI(QMainWindow):
 
     def _page_shell(self, title: str, subtitle: str) -> tuple[QWidget, QVBoxLayout]:
         body = QWidget()
+        body.setObjectName("PageBody")
+        body.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        body.setAutoFillBackground(False)
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(12)
 
-        head = QWidget()
+        head = FrostedPanel(radius=26)
         head_layout = QVBoxLayout(head)
         head_layout.setContentsMargins(22, 20, 22, 20)
         head_layout.setSpacing(4)
@@ -1036,6 +953,9 @@ class SubtitleGUI(QMainWindow):
         body_layout.addWidget(head)
 
         content = QWidget()
+        content.setObjectName("PageContent")
+        content.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        content.setAutoFillBackground(False)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(12)
@@ -1044,6 +964,13 @@ class SubtitleGUI(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        scroll.setAutoFillBackground(False)
+        viewport = scroll.viewport()
+        if viewport is not None:
+            viewport.setObjectName("ScrollViewport")
+            viewport.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            viewport.setAutoFillBackground(False)
         scroll.setWidget(body)
         return scroll, content_layout
 
@@ -1061,7 +988,7 @@ class SubtitleGUI(QMainWindow):
         top_grid.setVerticalSpacing(12)
         layout.addLayout(top_grid)
 
-        input_card = QWidget()
+        input_card = FrostedPanel(radius=26)
         input_layout = QVBoxLayout(input_card)
         input_layout.setContentsMargins(22, 20, 22, 20)
         input_layout.setSpacing(12)
@@ -1089,7 +1016,7 @@ class SubtitleGUI(QMainWindow):
 
         top_grid.addWidget(input_card, 0, 0, 1, 2)
 
-        basic_card = QWidget()
+        basic_card = FrostedPanel(radius=26)
         basic_layout = QVBoxLayout(basic_card)
         basic_layout.setContentsMargins(22, 20, 22, 20)
         basic_layout.setSpacing(12)
@@ -1113,7 +1040,7 @@ class SubtitleGUI(QMainWindow):
         self.preset_combo.currentIndexChanged.connect(self._refresh_selection_hints)
         self._form_row(basic_layout, "프리셋", self.preset_combo)
 
-        rec_box = FrostedPanel(radius=18)
+        rec_box = PlainPanel(radius=18)
         rec_inner = QVBoxLayout(rec_box)
         rec_inner.setContentsMargins(16, 14, 16, 14)
         rec_inner.setSpacing(8)
@@ -1136,7 +1063,7 @@ class SubtitleGUI(QMainWindow):
         basic_layout.addWidget(rec_box)
         top_grid.addWidget(basic_card, 1, 0)
 
-        device_card = QWidget()
+        device_card = FrostedPanel(radius=26)
         device_layout = QVBoxLayout(device_card)
         device_layout.setContentsMargins(22, 20, 22, 20)
         device_layout.setSpacing(12)
@@ -1164,7 +1091,7 @@ class SubtitleGUI(QMainWindow):
         device_layout.addLayout(device_action_row)
         top_grid.addWidget(device_card, 1, 1)
 
-        audio_card = QWidget()
+        audio_card = FrostedPanel(radius=26)
         audio_layout = QVBoxLayout(audio_card)
         audio_layout.setContentsMargins(22, 20, 22, 20)
         audio_layout.setSpacing(12)
@@ -1180,7 +1107,7 @@ class SubtitleGUI(QMainWindow):
         audio_layout.addLayout(audio_chip_row)
         top_grid.addWidget(audio_card, 2, 0)
 
-        output_card = QWidget()
+        output_card = FrostedPanel(radius=26)
         output_layout = QVBoxLayout(output_card)
         output_layout.setContentsMargins(22, 20, 22, 20)
         output_layout.setSpacing(12)
@@ -1212,7 +1139,7 @@ class SubtitleGUI(QMainWindow):
         top_grid.setVerticalSpacing(12)
         layout.addLayout(top_grid)
 
-        start_card = QWidget()
+        start_card = FrostedPanel(radius=26)
         start_layout = QVBoxLayout(start_card)
         start_layout.setContentsMargins(22, 20, 22, 20)
         start_layout.setSpacing(10)
@@ -1236,7 +1163,7 @@ class SubtitleGUI(QMainWindow):
         start_layout.addLayout(start_btn_row)
         top_grid.addWidget(start_card, 0, 0)
 
-        quick_card = QWidget()
+        quick_card = FrostedPanel(radius=26)
         quick_layout = QVBoxLayout(quick_card)
         quick_layout.setContentsMargins(22, 20, 22, 20)
         quick_layout.setSpacing(10)
@@ -1261,7 +1188,7 @@ class SubtitleGUI(QMainWindow):
         mid_grid.setVerticalSpacing(12)
         layout.addLayout(mid_grid)
 
-        model_card = QWidget()
+        model_card = FrostedPanel(radius=26)
         model_layout = QVBoxLayout(model_card)
         model_layout.setContentsMargins(22, 20, 22, 20)
         model_layout.setSpacing(10)
@@ -1288,7 +1215,7 @@ class SubtitleGUI(QMainWindow):
         model_layout.addLayout(model_btn_row)
         mid_grid.addWidget(model_card, 0, 0)
 
-        progress_card = QWidget()
+        progress_card = FrostedPanel(radius=26)
         progress_layout = QVBoxLayout(progress_card)
         progress_layout.setContentsMargins(22, 20, 22, 20)
         progress_layout.setSpacing(10)
@@ -1319,7 +1246,7 @@ class SubtitleGUI(QMainWindow):
         lower_grid.setVerticalSpacing(12)
         layout.addLayout(lower_grid)
 
-        resource_card = QWidget()
+        resource_card = FrostedPanel(radius=26)
         resource_layout = QVBoxLayout(resource_card)
         resource_layout.setContentsMargins(22, 20, 22, 20)
         resource_layout.setSpacing(10)
@@ -1340,7 +1267,7 @@ class SubtitleGUI(QMainWindow):
         resource_layout.addWidget(self.resource_meta_label)
         lower_grid.addWidget(resource_card, 0, 0)
 
-        status_card = QWidget()
+        status_card = FrostedPanel(radius=26)
         status_layout = QVBoxLayout(status_card)
         status_layout.setContentsMargins(22, 20, 22, 20)
         status_layout.setSpacing(12)
@@ -1351,7 +1278,7 @@ class SubtitleGUI(QMainWindow):
         self.status_tiles = {}
         rows = [("model", "모델"), ("engine", "엔진"), ("torch", "PyTorch"), ("device", "장치"), ("runtime", "런타임")]
         for idx, (key, label_text) in enumerate(rows):
-            tile = FrostedPanel(radius=22)
+            tile = PlainPanel(radius=20)
             tile_layout = QVBoxLayout(tile)
             tile_layout.setContentsMargins(16, 14, 16, 14)
             tile_layout.setSpacing(6)
@@ -1373,7 +1300,7 @@ class SubtitleGUI(QMainWindow):
         status_layout.addLayout(status_grid)
         lower_grid.addWidget(status_card, 0, 1)
 
-        log_card = QWidget()
+        log_card = FrostedPanel(radius=26)
         log_layout = QVBoxLayout(log_card)
         log_layout.setContentsMargins(22, 20, 22, 20)
         log_layout.setSpacing(12)
@@ -1435,10 +1362,9 @@ class SubtitleGUI(QMainWindow):
     # Small builders
     # -------------------------------------------------
     def _make_button(self, text: str, slot, primary: bool = False, danger: bool = False) -> QPushButton:
-        role = "primary" if primary else ("danger" if danger else "soft")
-        btn = TexturedButton(text, role=role, radius=16)
+        btn = QPushButton(text)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(slot)
-        btn.setFont(QFont(self.ui_font_family, 10, QFont.Weight.DemiBold))
         if primary:
             btn.setObjectName("PrimaryButton")
         elif danger:
