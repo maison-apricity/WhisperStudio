@@ -93,15 +93,15 @@ class MARGINS(ctypes.Structure):
 
 
 COLOR = {
-    "shell": QColor(248, 244, 250, 186),
-    "shell_edge": QColor(255, 255, 255, 72),
-    "panel_top": QColor(255, 255, 255, 38),
-    "panel_mid": QColor(250, 247, 252, 28),
-    "panel_bottom": QColor(246, 241, 249, 22),
-    "panel_gloss": QColor(255, 255, 255, 64),
-    "panel_edge": QColor(255, 255, 255, 54),
-    "panel_edge_inner": QColor(255, 255, 255, 24),
-    "panel_shadow": QColor(72, 44, 96, 18),
+    "shell": QColor(248, 244, 250, 118),
+    "shell_edge": QColor(255, 255, 255, 96),
+    "panel_top": QColor(255, 255, 255, 24),
+    "panel_mid": QColor(250, 247, 252, 18),
+    "panel_bottom": QColor(246, 241, 249, 12),
+    "panel_gloss": QColor(255, 255, 255, 86),
+    "panel_edge": QColor(255, 255, 255, 68),
+    "panel_edge_inner": QColor(255, 255, 255, 20),
+    "panel_shadow": QColor(72, 44, 96, 22),
     "text": QColor(44, 37, 54),
     "muted": QColor(103, 94, 114),
     "soft": QColor(126, 118, 136),
@@ -113,7 +113,7 @@ COLOR = {
     "danger": QColor(216, 112, 112),
     "info": QColor(112, 159, 219),
     "neutral": QColor(168, 157, 172),
-    "track": QColor(255, 255, 255, 90),
+    "track": QColor(255, 255, 255, 72),
     "fill": QColor(244, 153, 124),
 }
 
@@ -238,20 +238,20 @@ def draw_glass_button(painter: QPainter, rect: QRect, *, radius: int, role: str,
 
     if role == "primary" or checked:
         base = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-        base.setColorAt(0.0, QColor(255, 194, 210, 214 if enabled else 148))
-        base.setColorAt(0.45, QColor(241, 157, 199, 206 if enabled else 144))
-        base.setColorAt(1.0, QColor(155, 207, 255, 196 if enabled else 138))
+        base.setColorAt(0.0, QColor(255, 194, 210, 226 if enabled else 162))
+        base.setColorAt(0.45, QColor(241, 157, 199, 220 if enabled else 154))
+        base.setColorAt(1.0, QColor(155, 207, 255, 212 if enabled else 148))
         edge = QColor(255, 255, 255, 110 if enabled else 70)
     elif role == "danger":
         base = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-        base.setColorAt(0.0, QColor(255, 255, 255, 42 if enabled else 22))
-        base.setColorAt(1.0, QColor(255, 207, 207, 32 if enabled else 18))
+        base.setColorAt(0.0, QColor(255, 255, 255, 88 if enabled else 32))
+        base.setColorAt(1.0, QColor(255, 207, 207, 66 if enabled else 24))
         edge = QColor(255, 184, 184, 82 if enabled else 42)
     else:
         base = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-        base.setColorAt(0.0, QColor(255, 255, 255, 48 if enabled else 22))
-        base.setColorAt(0.5, QColor(255, 255, 255, 30 if enabled else 16))
-        base.setColorAt(1.0, QColor(240, 232, 246, 24 if enabled else 12))
+        base.setColorAt(0.0, QColor(255, 255, 255, 94 if enabled else 34))
+        base.setColorAt(0.5, QColor(255, 255, 255, 72 if enabled else 24))
+        base.setColorAt(1.0, QColor(240, 232, 246, 56 if enabled else 18))
         edge = QColor(255, 255, 255, 82 if enabled else 36)
 
     if hovered and enabled:
@@ -276,7 +276,7 @@ def draw_glass_button(painter: QPainter, rect: QRect, *, radius: int, role: str,
     bottom.setColorAt(0.0, QColor(120, 96, 150, 20 if enabled else 10))
     bottom.setColorAt(1.0, QColor(255, 255, 255, 0))
     painter.fillRect(rect, bottom)
-    paint_frost_texture(painter, rect.adjusted(2, 2, -2, -2), 0.14 if role == "soft" else 0.10, 8 if role == "primary" else 0)
+    paint_frost_texture(painter, rect.adjusted(2, 2, -2, -2), 0.20 if role == "soft" else 0.16, 8 if role == "primary" else 0)
     if boost is not None:
         painter.fillRect(rect, boost)
     painter.restore()
@@ -303,6 +303,7 @@ class TexturedButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setCheckable(False)
         self.setMinimumHeight(42)
+        self.setMinimumWidth(92)
         self.setStyleSheet("background: transparent; border: none;")
 
     def enterEvent(self, event):
@@ -329,7 +330,7 @@ class TexturedButton(QPushButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         draw_glass_button(painter, self.rect(), radius=self.radius, role=self.role, hovered=self._hovered, pressed=self._pressed, checked=self.isChecked(), enabled=self.isEnabled())
-        painter.setPen(QPen(QColor(255,255,255,244) if self.role == "primary" or self.isChecked() else QColor(58,46,62,242 if self.isEnabled() else 120)))
+        painter.setPen(QPen(QColor(255,255,255,250) if self.role == "primary" or self.isChecked() else QColor(54,42,66,248 if self.isEnabled() else 132)))
         painter.setFont(self.font())
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
         painter.end()
@@ -358,22 +359,22 @@ class FrostedPanel(QFrame):
             path.addRoundedRect(rect, self._radius, self._radius)
 
             base = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-            base.setColorAt(0.0, QColor(255, 255, 255, 34))
-            base.setColorAt(0.38, QColor(248, 242, 252, 24))
-            base.setColorAt(1.0, QColor(240, 233, 248, 18))
+            base.setColorAt(0.0, QColor(255, 255, 255, 24))
+            base.setColorAt(0.38, QColor(248, 242, 252, 15))
+            base.setColorAt(1.0, QColor(240, 233, 248, 10))
             painter.fillPath(path, base)
 
             painter.save()
             painter.setClipPath(path)
             gloss = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.top() + rect.height() * 0.45)
-            gloss.setColorAt(0.0, QColor(255, 255, 255, 72))
+            gloss.setColorAt(0.0, QColor(255, 255, 255, 64))
             gloss.setColorAt(0.25, QColor(255, 255, 255, 18))
             gloss.setColorAt(1.0, QColor(255, 255, 255, 0))
             painter.fillRect(rect, gloss)
 
             bloom = QRadialGradient(rect.left() + rect.width() * 0.2, rect.top() + rect.height() * 0.15, rect.width() * 0.9)
-            bloom.setColorAt(0.0, QColor(255, 196, 223, 24))
-            bloom.setColorAt(0.45, QColor(190, 216, 255, 20))
+            bloom.setColorAt(0.0, QColor(255, 196, 223, 36))
+            bloom.setColorAt(0.45, QColor(190, 216, 255, 28))
             bloom.setColorAt(1.0, QColor(255, 255, 255, 0))
             painter.fillRect(rect, bloom)
 
@@ -382,7 +383,7 @@ class FrostedPanel(QFrame):
             side_haze.setColorAt(0.5, QColor(255, 255, 255, 0))
             side_haze.setColorAt(1.0, QColor(255, 255, 255, 10))
             painter.fillRect(rect, side_haze)
-            paint_frost_texture(painter, rect.adjusted(2, 2, -2, -2), 0.12)
+            paint_frost_texture(painter, rect.adjusted(2, 2, -2, -2), 0.16)
             painter.restore()
 
             painter.setPen(QPen(COLOR["panel_edge"], 1.0))
@@ -408,9 +409,9 @@ class BackdropSurface(QWidget):
             shell_path = QPainterPath()
             shell_path.addRoundedRect(shell_rect, 32, 32)
             shell_fill = QLinearGradient(shell_rect.left(), shell_rect.top(), shell_rect.right(), shell_rect.bottom())
-            shell_fill.setColorAt(0.0, QColor(251, 246, 252, 176))
-            shell_fill.setColorAt(0.45, QColor(245, 240, 251, 164))
-            shell_fill.setColorAt(1.0, QColor(240, 236, 248, 154))
+            shell_fill.setColorAt(0.0, QColor(251, 246, 252, 118))
+            shell_fill.setColorAt(0.45, QColor(245, 240, 251, 108))
+            shell_fill.setColorAt(1.0, QColor(240, 236, 248, 98))
             painter.fillPath(shell_path, shell_fill)
             painter.setPen(QPen(COLOR["shell_edge"], 1.0))
             painter.drawPath(shell_path)
@@ -419,16 +420,16 @@ class BackdropSurface(QWidget):
             painter.setClipPath(shell_path)
 
             ambient = QLinearGradient(shell_rect.topLeft(), shell_rect.bottomRight())
-            ambient.setColorAt(0.0, QColor(255, 255, 255, 44))
-            ambient.setColorAt(0.38, QColor(249, 220, 243, 28))
-            ambient.setColorAt(1.0, QColor(208, 230, 255, 26))
+            ambient.setColorAt(0.0, QColor(255, 255, 255, 30))
+            ambient.setColorAt(0.38, QColor(249, 220, 243, 36))
+            ambient.setColorAt(1.0, QColor(208, 230, 255, 34))
             painter.fillRect(shell_rect, ambient)
 
             orbs = [
-                (QColor(255, 180, 214, 88), QRect(shell_rect.left() - 80, shell_rect.top() + 86, 320, 320)),
-                (QColor(161, 222, 255, 74), QRect(shell_rect.right() - 330, shell_rect.top() - 20, 310, 310)),
-                (QColor(211, 170, 255, 70), QRect(shell_rect.left() + 220, shell_rect.bottom() - 250, 360, 280)),
-                (QColor(255, 214, 156, 38), QRect(shell_rect.right() - 300, shell_rect.bottom() - 230, 250, 250)),
+                (QColor(255, 180, 214, 132), QRect(shell_rect.left() - 80, shell_rect.top() + 86, 320, 320)),
+                (QColor(161, 222, 255, 118), QRect(shell_rect.right() - 330, shell_rect.top() - 20, 310, 310)),
+                (QColor(211, 170, 255, 110), QRect(shell_rect.left() + 220, shell_rect.bottom() - 250, 360, 280)),
+                (QColor(255, 214, 156, 76), QRect(shell_rect.right() - 300, shell_rect.bottom() - 230, 250, 250)),
             ]
             for color, orb_rect in orbs:
                 orb = QRadialGradient(orb_rect.center(), max(orb_rect.width(), orb_rect.height()) * 0.52)
@@ -534,7 +535,8 @@ class ChipButton(TexturedButton):
     def __init__(self, text: str, parent: QWidget | None = None):
         super().__init__(text, role="soft", radius=14, parent=parent)
         self.setCheckable(True)
-        self.setMinimumHeight(38)
+        self.setMinimumHeight(40)
+        self.setMinimumWidth(74)
         self.setFont(QFont(self.font().family(), self.font().pointSize(), QFont.Weight.DemiBold))
 
     def paintEvent(self, event):
@@ -610,14 +612,14 @@ class TitleBar(QWidget):
             """
             QToolButton {
                 color: rgba(70,58,74,0.94);
-                background: rgba(255,255,255,0.20);
+                background: rgba(255,255,255,0.06);
                 border: 1px solid rgba(255,255,255,0.34);
                 border-radius: 12px;
                 min-width: 36px;
                 min-height: 36px;
             }
             QToolButton:hover {
-                background: rgba(255,255,255,0.22);
+                background: rgba(255,255,255,0.12);
             }
             """
         )
@@ -875,7 +877,7 @@ class SubtitleGUI(QMainWindow):
                 font-weight: 700;
             }}
             QComboBox {{
-                background: rgba(255,255,255,0.20);
+                background: rgba(255,255,255,0.06);
                 border: 1px solid rgba(255,255,255,0.42);
                 border-radius: 14px;
                 padding: 10px 12px;
@@ -894,7 +896,7 @@ class SubtitleGUI(QMainWindow):
                 padding: 6px;
             }}
             QListWidget, QPlainTextEdit {{
-                background: rgba(255,255,255,0.12);
+                background: rgba(255,255,255,0.08);
                 border: 1px solid rgba(255,255,255,0.40);
                 border-radius: 18px;
                 padding: 10px;
@@ -919,13 +921,13 @@ class SubtitleGUI(QMainWindow):
                 height: 18px;
                 border-radius: 6px;
                 border: 1px solid rgba(255,255,255,0.64);
-                background: rgba(255,255,255,0.22);
+                background: rgba(255,255,255,0.12);
             }}
             QCheckBox::indicator:checked {{
                 background: rgba(244,153,124,0.78);
             }}
             QProgressBar {{
-                background: rgba(255,255,255,0.10);
+                background: rgba(255,255,255,0.06);
                 border: 1px solid rgba(255,255,255,0.34);
                 border-radius: 11px;
                 min-height: 18px;
