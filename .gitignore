@@ -3,7 +3,7 @@ dist/
 build/
 
 # python
-.venv/
+.venv*/
 __pycache__/
 *.pyc
 
@@ -23,3 +23,9 @@ _include/ffmpeg/
 # OS
 .DS_Store
 Thumbs.db
+
+#setting
+settings.json
+
+#backup
+*.bak.*
