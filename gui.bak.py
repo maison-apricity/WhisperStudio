@@ -137,46 +137,31 @@ class SubtitleGUI(tk.Tk):
     # -------------------------------------------------
     def _init_palette(self):
         self.colors = {
-            "bg": "#EDF3FF",
-            "bg_alt": "#E3ECFF",
-            "card": "#FBFDFF",
-            "card_strong": "#FFFFFF",
-            "panel": "#F4F7FF",
-            "panel_alt": "#EEF3FF",
-            "border": "#D4E0F4",
-            "border_strong": "#BECDE7",
-            "text": "#182335",
-            "subtext": "#5F6C86",
-            "accent": "#6D5EF8",
-            "accent_hover": "#5B4DE0",
-            "accent_soft": "#EEF0FF",
-            "accent_soft_hover": "#E3E7FF",
-            "accent_soft_text": "#4A42B8",
-            "accent_2": "#5EC8FF",
-            "success": "#169B74",
-            "warning": "#E58A1F",
-            "danger": "#E05A6F",
-            "info": "#4A7DFF",
-            "log_bg": "#F7FAFF",
-            "log_fg": "#182335",
-            "dock": "#F3F7FF",
-            "shadow": "#DCE5F7",
-            "shadow_strong": "#CED8EE",
-            "hero": "#F5F7FF",
-            "hero_edge": "#E6ECFF",
-            "input_bg": "#FFFFFF",
-            "selection": "#DDE7FF",
+            "bg": "#F4F7FB",
+            "card": "#FFFFFF",
+            "border": "#D9E2EC",
+            "text": "#1F2937",
+            "subtext": "#6B7280",
+            "accent": "#2563EB",
+            "accent_hover": "#1D4ED8",
+            "success": "#059669",
+            "warning": "#D97706",
+            "danger": "#DC2626",
+            "info": "#0284C7",
+            "log_bg": "#F8FAFC",
+            "log_fg": "#1F2937",
+            "dock": "#F8FAFC",
         }
 
     def _init_fonts(self):
         self.font_family = pick_ui_font_family()
         self.mono_family = pick_code_font_family(self.font_family)
 
-        self.font_title = tkfont.Font(family=self.font_family, size=24, weight="bold")
-        self.font_heading = tkfont.Font(family=self.font_family, size=13, weight="bold")
+        self.font_title = tkfont.Font(family=self.font_family, size=21, weight="bold")
+        self.font_heading = tkfont.Font(family=self.font_family, size=12, weight="bold")
         self.font_body = tkfont.Font(family=self.font_family, size=11)
         self.font_body_bold = tkfont.Font(family=self.font_family, size=11, weight="bold")
-        self.font_emphasis = tkfont.Font(family=self.font_family, size=13, weight="bold")
+        self.font_emphasis = tkfont.Font(family=self.font_family, size=12, weight="bold")
         self.font_small = tkfont.Font(family=self.font_family, size=10)
         self.font_badge = tkfont.Font(family=self.font_family, size=9, weight="bold")
         self.font_mono = tkfont.Font(family=self.mono_family, size=10)
@@ -209,56 +194,28 @@ class SubtitleGUI(tk.Tk):
             ".",
             background=self.colors["bg"],
             foreground=self.colors["text"],
-            fieldbackground=self.colors["input_bg"],
-            bordercolor=self.colors["border"],
-            troughcolor=self.colors["panel"],
+            fieldbackground="#FFFFFF",
             font=(self.font_family, 10),
         )
 
         style.configure(
             "Modern.TEntry",
-            fieldbackground=self.colors["input_bg"],
+            fieldbackground="#FFFFFF",
             foreground=self.colors["text"],
-            insertcolor=self.colors["text"],
-            padding=10,
-            relief="flat",
-            borderwidth=0,
-            bordercolor=self.colors["border_strong"],
-            lightcolor=self.colors["card_strong"],
+            padding=8,
+            bordercolor=self.colors["border"],
+            lightcolor=self.colors["border"],
             darkcolor=self.colors["border"],
-        )
-        style.map(
-            "Modern.TEntry",
-            bordercolor=[("focus", self.colors["accent"]), ("!focus", self.colors["border_strong"])],
-            lightcolor=[("focus", self.colors["card_strong"])],
-            darkcolor=[("focus", self.colors["accent"]), ("!focus", self.colors["border"])],
         )
 
         style.configure(
             "Modern.Horizontal.TProgressbar",
-            troughcolor=self.colors["panel_alt"],
+            troughcolor="#E5E7EB",
             background=self.colors["accent"],
-            bordercolor=self.colors["panel_alt"],
+            bordercolor="#E5E7EB",
             lightcolor=self.colors["accent"],
             darkcolor=self.colors["accent"],
-            thickness=14,
-        )
-
-        style.configure(
-            "Modern.Vertical.TScrollbar",
-            background=self.colors["panel_alt"],
-            troughcolor=self.colors["panel"],
-            bordercolor=self.colors["panel"],
-            arrowcolor=self.colors["accent_soft_text"],
-            darkcolor=self.colors["panel_alt"],
-            lightcolor=self.colors["panel_alt"],
-            gripcount=0,
-            width=12,
-            relief="flat",
-        )
-        style.map(
-            "Modern.Vertical.TScrollbar",
-            background=[("active", self.colors["accent_soft"]), ("!active", self.colors["panel_alt"])],
+            thickness=12,
         )
 
     def _apply_window_icon(self):
@@ -332,52 +289,40 @@ class SubtitleGUI(tk.Tk):
     # -------------------------------------------------
     def _make_card(self, parent, expand=False):
         outer = tk.Frame(parent, bg=self.colors["bg"], bd=0, highlightthickness=0)
-        outer.pack(fill="both" if expand else "x", expand=expand, pady=(0, 14))
-
-        shadow = tk.Frame(outer, bg=self.colors["shadow"], bd=0, highlightthickness=0)
-        shadow.pack(fill="both", expand=True, padx=2, pady=2)
+        outer.pack(fill="both" if expand else "x", expand=expand, pady=(0, 10))
 
         card = tk.Frame(
-            shadow,
-            bg=self.colors["card_strong"],
+            outer,
+            bg=self.colors["card"],
             bd=0,
             highlightthickness=1,
             highlightbackground=self.colors["border"],
         )
-        card.pack(fill="both", expand=True, padx=1, pady=1)
-
-        glow = tk.Frame(card, bg=self.colors["hero_edge"], height=1)
-        glow.pack(fill="x", side="top")
+        card.pack(fill="both", expand=True)
         return card
 
     def _make_section_header(self, parent, title, subtitle=""):
-        header = tk.Frame(parent, bg=self.colors["card_strong"])
-        header.pack(fill="x", padx=20, pady=(18, 8))
-
-        accent_row = tk.Frame(header, bg=self.colors["card_strong"])
-        accent_row.pack(fill="x")
-        tk.Frame(accent_row, bg=self.colors["accent"], width=34, height=3).pack(anchor="w")
+        header = tk.Frame(parent, bg=self.colors["card"])
+        header.pack(fill="x", padx=18, pady=(14, 6))
 
         tk.Label(
             header,
             text=title,
-            bg=self.colors["card_strong"],
+            bg=self.colors["card"],
             fg=self.colors["text"],
             font=self.font_heading,
             anchor="w",
-        ).pack(anchor="w", pady=(10, 0))
+        ).pack(anchor="w")
 
         if subtitle:
             tk.Label(
                 header,
                 text=subtitle,
-                bg=self.colors["card_strong"],
+                bg=self.colors["card"],
                 fg=self.colors["subtext"],
                 font=self.font_small,
                 anchor="w",
-                justify="left",
-                wraplength=1020,
-            ).pack(anchor="w", pady=(4, 0))
+            ).pack(anchor="w", pady=(2, 0))
 
     def _make_labeled_info_row(self, parent, label_text, textvariable, bg, wraplength=900):
         row = tk.Frame(parent, bg=bg)
@@ -403,97 +348,57 @@ class SubtitleGUI(tk.Tk):
             wraplength=wraplength,
         ).pack(side="left", fill="x", expand=True)
 
-    def _button_palette(self, kind="secondary"):
+    def _make_button(self, parent, text, command, kind="secondary", state="normal", width=None):
         palette = {
             "primary": {
                 "bg": self.colors["accent"],
                 "fg": "#FFFFFF",
                 "activebg": self.colors["accent_hover"],
                 "activefg": "#FFFFFF",
-                "border": self.colors["accent"],
-                "hover_bg": self.colors["accent_hover"],
             },
             "secondary": {
-                "bg": self.colors["card_strong"],
+                "bg": "#E8EEF7",
                 "fg": self.colors["text"],
-                "activebg": self.colors["panel_alt"],
+                "activebg": "#D9E6F7",
                 "activefg": self.colors["text"],
-                "border": self.colors["border_strong"],
-                "hover_bg": self.colors["panel_alt"],
             },
             "soft": {
-                "bg": self.colors["accent_soft"],
-                "fg": self.colors["accent_soft_text"],
-                "activebg": self.colors["accent_soft_hover"],
-                "activefg": self.colors["accent_soft_text"],
-                "border": self.colors["hero_edge"],
-                "hover_bg": self.colors["accent_soft_hover"],
+                "bg": "#F1F5F9",
+                "fg": self.colors["text"],
+                "activebg": "#E2E8F0",
+                "activefg": self.colors["text"],
             },
         }
-        return dict(palette.get(kind, palette["secondary"]))
-
-    def _apply_button_palette(self, button, palette, hovered=False):
-        bg = palette.get("hover_bg", palette["bg"]) if hovered else palette["bg"]
-        button.configure(
-            bg=bg,
-            fg=palette["fg"],
-            activebackground=palette["activebg"],
-            activeforeground=palette["activefg"],
-            highlightbackground=palette["border"],
-            highlightcolor=palette["border"],
-        )
-
-    def _make_pill_label(self, parent, text, kind="neutral", padx=10, pady=4):
-        palette = {
-            "accent": (self.colors["accent_soft"], self.colors["accent_soft_text"]),
-            "neutral": (self.colors["panel_alt"], self.colors["subtext"]),
-            "success": ("#EAF9F4", "#177A5D"),
-            "warning": ("#FFF4E7", "#A85A07"),
-        }
-        bg, fg = palette.get(kind, palette["neutral"])
-        return tk.Label(parent, text=text, bg=bg, fg=fg, font=self.font_badge, padx=padx, pady=pady)
-
-    def _make_button(self, parent, text, command, kind="secondary", state="normal", width=None):
-        p = self._button_palette(kind)
+        p = palette.get(kind, palette["secondary"])
 
         btn = tk.Button(
             parent,
             text=text,
             command=command,
+            bg=p["bg"],
+            fg=p["fg"],
+            activebackground=p["activebg"],
+            activeforeground=p["activefg"],
+            disabledforeground="#94A3B8",
             relief="flat",
             bd=0,
-            highlightthickness=1,
-            highlightbackground=p["border"],
-            highlightcolor=p["border"],
-            disabledforeground="#93A1B7",
-            padx=16 if kind == "primary" else 13,
-            pady=9 if kind == "primary" else 8,
+            highlightthickness=0,
+            padx=14 if kind == "primary" else 12,
+            pady=8 if kind == "primary" else 7,
             cursor="hand2",
             font=self.font_body_bold if kind == "primary" else self.font_body,
             state=state,
             width=width,
         )
-        self._apply_button_palette(btn, p)
-
-        def handle_enter(_event, button=btn, palette=p):
-            if str(button.cget("state")) != "disabled":
-                self._apply_button_palette(button, palette, hovered=True)
-
-        def handle_leave(_event, button=btn, palette=p):
-            if str(button.cget("state")) != "disabled":
-                self._apply_button_palette(button, palette, hovered=False)
-
-        btn.bind("<Enter>", handle_enter)
-        btn.bind("<Leave>", handle_leave)
         return btn
 
     def _set_badge(self, widget, text, level="info"):
         palette = {
-            "info": ("#EAF0FF", "#4868E8"),
-            "success": ("#EAF9F4", "#177A5D"),
-            "warning": ("#FFF4E7", "#A85A07"),
-            "danger": ("#FFECEE", "#B63B58"),
-            "neutral": (self.colors["panel_alt"], self.colors["subtext"]),
+            "info": ("#E0F2FE", "#0369A1"),
+            "success": ("#DCFCE7", "#166534"),
+            "warning": ("#FEF3C7", "#92400E"),
+            "danger": ("#FEE2E2", "#991B1B"),
+            "neutral": ("#E5E7EB", "#374151"),
         }
         bg, fg = palette.get(level, palette["neutral"])
         widget.configure(text=text, bg=bg, fg=fg)
@@ -659,7 +564,7 @@ class SubtitleGUI(tk.Tk):
         )
         self.main_canvas.pack(side="left", fill="both", expand=True)
 
-        self.main_scrollbar = ttk.Scrollbar(self.body_host, orient="vertical", command=self.main_canvas.yview, style="Modern.Vertical.TScrollbar")
+        self.main_scrollbar = ttk.Scrollbar(self.body_host, orient="vertical", command=self.main_canvas.yview)
         self.main_scrollbar.pack(side="right", fill="y")
         self.main_canvas.configure(yscrollcommand=self.main_scrollbar.set)
 
@@ -881,9 +786,9 @@ class SubtitleGUI(tk.Tk):
             shell = tk.Frame(popup, bg=self.colors["card"], highlightthickness=1, highlightbackground=self.colors["border"])
             shell.pack(fill="both", expand=True)
     
-            header = tk.Frame(shell, bg=self.colors["panel"])
+            header = tk.Frame(shell, bg="#F8FAFC")
             header.pack(fill="x")
-            tk.Label(header, text=title, bg=self.colors["panel"], fg=self.colors["text"], font=self.font_heading).pack(side="left", padx=12, pady=10)
+            tk.Label(header, text=title, bg="#F8FAFC", fg=self.colors["text"], font=self.font_heading).pack(side="left", padx=12, pady=10)
             self._make_button(header, "닫기", self._close_selector_popup, kind="soft").pack(side="right", padx=8, pady=6)
     
             self.selector_filter_var = tk.StringVar()
@@ -898,7 +803,7 @@ class SubtitleGUI(tk.Tk):
     
             self.selector_canvas = tk.Canvas(list_wrap, bg=self.colors["card"], highlightthickness=0, bd=0)
             self.selector_canvas.pack(side="left", fill="both", expand=True)
-            scroll = ttk.Scrollbar(list_wrap, orient="vertical", command=self.selector_canvas.yview, style="Modern.Vertical.TScrollbar")
+            scroll = ttk.Scrollbar(list_wrap, orient="vertical", command=self.selector_canvas.yview)
             scroll.pack(side="right", fill="y")
             self.selector_canvas.configure(yscrollcommand=scroll.set)
     
@@ -1098,28 +1003,28 @@ class SubtitleGUI(tk.Tk):
         level = item.get("status_level", "info")
 
         if level == "success":
-            bg = "#F1FBF7" if selected else ("#F5FCF9" if hovered else self.colors["card_strong"])
-            border = "#7AD7B6" if selected else ("#B3E8D6" if hovered else self.colors["border"])
-            badge_bg = "#EAF9F4"
-            badge_fg = "#177A5D"
-            subtext_fg = self.colors["subtext"]
+            bg = "#ECFDF3" if selected else ("#F0FDF4" if hovered else self.colors["card"])
+            border = "#34D399" if selected else ("#86EFAC" if hovered else self.colors["border"])
+            badge_bg = "#DCFCE7"
+            badge_fg = "#166534"
+            subtext_fg = "#4B5563"
         elif level == "warning":
-            bg = "#FFF7ED" if selected else ("#FFF9F1" if hovered else self.colors["card_strong"])
-            border = "#F2B26B" if selected else ("#F8D5A6" if hovered else self.colors["border"])
-            badge_bg = "#FFF0DC"
-            badge_fg = "#A85A07"
-            subtext_fg = self.colors["subtext"]
+            bg = "#FFF7ED" if selected else ("#FFFBEB" if hovered else self.colors["card"])
+            border = "#FB923C" if selected else ("#FCD34D" if hovered else self.colors["border"])
+            badge_bg = "#FED7AA"
+            badge_fg = "#9A3412"
+            subtext_fg = "#4B5563"
         elif level == "danger":
-            bg = "#FFF2F4" if selected else ("#FFF6F7" if hovered else self.colors["card_strong"])
-            border = "#F39AAA" if selected else ("#F7C4CD" if hovered else self.colors["border"])
-            badge_bg = "#FFECEE"
-            badge_fg = "#B63B58"
-            subtext_fg = self.colors["subtext"]
+            bg = "#FEF2F2" if selected else ("#FEF2F2" if hovered else self.colors["card"])
+            border = "#F87171" if selected else ("#FCA5A5" if hovered else self.colors["border"])
+            badge_bg = "#FEE2E2"
+            badge_fg = "#991B1B"
+            subtext_fg = "#4B5563"
         else:
-            bg = self.colors["accent_soft"] if selected else (self.colors["panel"] if hovered else self.colors["card_strong"])
-            border = self.colors["accent"] if selected else (self.colors["border_strong"] if hovered else self.colors["border"])
-            badge_bg = self.colors["accent_soft"]
-            badge_fg = self.colors["accent_soft_text"]
+            bg = "#EFF6FF" if selected else ("#F8FAFC" if hovered else self.colors["card"])
+            border = self.colors["accent"] if selected else self.colors["border"]
+            badge_bg = "#BFDBFE" if selected else "#DBEAFE"
+            badge_fg = "#1D4ED8"
             subtext_fg = self.colors["subtext"]
 
         return {
@@ -1129,7 +1034,7 @@ class SubtitleGUI(tk.Tk):
             "badge_fg": badge_fg,
             "subtext_fg": subtext_fg,
         }
-
+    
     def _selector_subtitle_font(self, item: dict):
         return self.font_small
 
@@ -1259,81 +1164,30 @@ class SubtitleGUI(tk.Tk):
     
     def _build_top_header(self, parent):
         header = tk.Frame(parent, bg=self.colors["bg"])
-        header.pack(fill="x", pady=(18, 16), padx=18)
-
-        shadow = tk.Frame(header, bg=self.colors["shadow_strong"], bd=0, highlightthickness=0)
-        shadow.pack(fill="x", padx=2, pady=2)
-
-        hero = tk.Frame(
-            shadow,
-            bg=self.colors["hero"],
-            highlightthickness=1,
-            highlightbackground=self.colors["hero_edge"],
-            padx=24,
-            pady=22,
-        )
-        hero.pack(fill="x", padx=1, pady=1)
-
-        left = tk.Frame(hero, bg=self.colors["hero"])
+        header.pack(fill="x", pady=(16, 14), padx=18)
+    
+        left = tk.Frame(header, bg=self.colors["bg"])
         left.pack(side="left", fill="x", expand=True)
-
-        pill_row = tk.Frame(left, bg=self.colors["hero"])
-        pill_row.pack(anchor="w")
-        self._make_pill_label(pill_row, f"v{APP_VERSION}", kind="accent").pack(side="left", padx=(0, 8))
-        self._make_pill_label(pill_row, "배치 전사", kind="neutral").pack(side="left", padx=(0, 8))
-        self._make_pill_label(pill_row, "실시간 상태 추적", kind="neutral").pack(side="left")
-
+    
         tk.Label(
             left,
             text=APP_NAME,
-            bg=self.colors["hero"],
+            bg=self.colors["bg"],
             fg=self.colors["text"],
             font=self.font_title,
             anchor="w",
-        ).pack(anchor="w", pady=(16, 0))
-
-        tk.Label(
-            left,
-            text="현대적인 작업 공간에서 Whisper 기반 전사를 빠르게 실행하고, 모델 상태·장치·로그를 한 번에 관리합니다.",
-            bg=self.colors["hero"],
-            fg=self.colors["subtext"],
-            font=self.font_body,
-            anchor="w",
-            justify="left",
-            wraplength=720,
-        ).pack(anchor="w", pady=(8, 0))
-
+        ).pack(anchor="w")
+    
         tk.Label(
             left,
             text=APP_TAGLINE,
-            bg=self.colors["hero"],
+            bg=self.colors["bg"],
             fg=self.colors["subtext"],
-            font=self.font_small,
+            font=self.font_body,
             anchor="w",
-            justify="left",
-            wraplength=760,
-        ).pack(anchor="w", pady=(10, 0))
-
-        right = tk.Frame(hero, bg=self.colors["hero"])
-        right.pack(side="right", padx=(18, 0))
-
-        art = tk.Canvas(
-            right,
-            width=236,
-            height=132,
-            bg=self.colors["hero"],
-            highlightthickness=0,
-            bd=0,
-        )
-        art.pack()
-        art.create_oval(18, 18, 128, 122, fill="#E7E8FF", outline="")
-        art.create_oval(96, 10, 206, 108, fill="#DDF3FF", outline="")
-        art.create_oval(138, 50, 222, 126, fill="#F2E7FF", outline="")
-        art.create_rectangle(38, 34, 188, 102, fill="#FFFFFF", outline=self.colors["hero_edge"], width=1)
-        art.create_text(56, 52, text="AI Speech", anchor="w", fill=self.colors["text"], font=(self.font_family, 11, "bold"))
-        art.create_text(56, 73, text="Batch-ready workspace", anchor="w", fill=self.colors["subtext"], font=(self.font_family, 9))
-        art.create_text(56, 92, text="Logs · Cache · Device", anchor="w", fill=self.colors["accent_soft_text"], font=(self.font_family, 9, "bold"))
-
+        ).pack(anchor="w", pady=(4, 0))
+    
+    
     def _build_file_card(self, parent):
         card = self._make_card(parent)
         self._make_section_header(card, "입력 파일", "한 개 또는 여러 개의 오디오/비디오 파일을 선택할 수 있습니다. 결과는 각 원본 파일과 같은 폴더에 저장됩니다.")
@@ -1426,14 +1280,14 @@ class SubtitleGUI(tk.Tk):
             self.output_format_buttons[fmt] = btn
         tk.Label(essential, text="SRT는 기본 자막, TXT는 문장 모음, VTT는 웹/영상 플레이어 연동에 적합합니다.", bg=self.colors["card"], fg=self.colors["subtext"], font=self.font_small, justify="left", wraplength=980, anchor="w").pack(anchor="w", padx=(86, 0), pady=(0, 12))
     
-        recommend = tk.Frame(essential, bg=self.colors["panel"], highlightthickness=1, highlightbackground=self.colors["border"])
+        recommend = tk.Frame(essential, bg="#F8FAFC", highlightthickness=1, highlightbackground=self.colors["border"])
         recommend.pack(fill="x", pady=(4, 12))
-        top = tk.Frame(recommend, bg=self.colors["panel"])
+        top = tk.Frame(recommend, bg="#F8FAFC")
         top.pack(fill="x", padx=12, pady=(10, 6))
-        tk.Label(top, text="자동 권장 설정", bg=self.colors["panel"], fg=self.colors["text"], font=self.font_body_bold).pack(side="left")
+        tk.Label(top, text="자동 권장 설정", bg="#F8FAFC", fg=self.colors["text"], font=self.font_body_bold).pack(side="left")
         self._make_button(top, "권장값 적용", self.apply_recommendations, kind="soft").pack(side="right")
-        tk.Label(recommend, textvariable=self.recommendation_summary_var, bg=self.colors["panel"], fg=self.colors["text"], font=self.font_body, justify="left", wraplength=980, anchor="w").pack(anchor="w", padx=12)
-        tk.Label(recommend, textvariable=self.recommendation_meta_var, bg=self.colors["panel"], fg=self.colors["subtext"], font=self.font_small, justify="left", wraplength=980, anchor="w").pack(anchor="w", padx=12, pady=(4, 10))
+        tk.Label(recommend, textvariable=self.recommendation_summary_var, bg="#F8FAFC", fg=self.colors["text"], font=self.font_body, justify="left", wraplength=980, anchor="w").pack(anchor="w", padx=12)
+        tk.Label(recommend, textvariable=self.recommendation_meta_var, bg="#F8FAFC", fg=self.colors["subtext"], font=self.font_small, justify="left", wraplength=980, anchor="w").pack(anchor="w", padx=12, pady=(4, 10))
     
         toggle_row = tk.Frame(body, bg=self.colors["card"])
         toggle_row.pack(fill="x", pady=(2, 8))
@@ -1444,7 +1298,7 @@ class SubtitleGUI(tk.Tk):
     
         model_wrap = tk.Frame(
             self.advanced_options_panel,
-            bg=self.colors["panel"],
+            bg="#F8FAFC",
             highlightthickness=1,
             highlightbackground=self.colors["border"],
             padx=12,
@@ -1452,19 +1306,19 @@ class SubtitleGUI(tk.Tk):
         )
         model_wrap.pack(fill="x", pady=(4, 8))
 
-        model_head = tk.Frame(model_wrap, bg=self.colors["panel"])
+        model_head = tk.Frame(model_wrap, bg="#F8FAFC")
         model_head.pack(fill="x")
 
-        left_head = tk.Frame(model_head, bg=self.colors["panel"])
+        left_head = tk.Frame(model_head, bg="#F8FAFC")
         left_head.pack(side="left", fill="x", expand=True)
-        title_row = tk.Frame(left_head, bg=self.colors["panel"])
+        title_row = tk.Frame(left_head, bg="#F8FAFC")
         title_row.pack(fill="x")
-        tk.Label(title_row, text="모델", bg=self.colors["panel"], fg=self.colors["text"], font=self.font_body_bold).pack(side="left")
-        self.model_cache_badge = tk.Label(title_row, text="확인 중", bg=self.colors["panel_alt"], fg=self.colors["subtext"], font=self.font_badge, padx=8, pady=3)
+        tk.Label(title_row, text="모델", bg="#F8FAFC", fg=self.colors["text"], font=self.font_body_bold).pack(side="left")
+        self.model_cache_badge = tk.Label(title_row, text="확인 중", bg="#E5E7EB", fg="#374151", font=self.font_badge, padx=8, pady=3)
         self.model_cache_badge.pack(side="left", padx=(10, 0))
-        tk.Label(left_head, textvariable=self.model_display_var, bg=self.colors["panel"], fg=self.colors["text"], font=self.font_emphasis, anchor="w", justify="left").pack(anchor="w", pady=(8, 0), fill="x")
+        tk.Label(left_head, textvariable=self.model_display_var, bg="#F8FAFC", fg=self.colors["text"], font=self.font_emphasis, anchor="w", justify="left").pack(anchor="w", pady=(8, 0), fill="x")
 
-        action_row = tk.Frame(model_head, bg=self.colors["panel"])
+        action_row = tk.Frame(model_head, bg="#F8FAFC")
         action_row.pack(side="right", anchor="n")
         self.model_selector_btn = self._make_button(action_row, "모델 선택", self.open_model_selector, kind="soft")
         self.model_selector_btn.pack(side="left", padx=(0, 8))
@@ -1473,34 +1327,34 @@ class SubtitleGUI(tk.Tk):
 
         model_info = tk.Frame(
             model_wrap,
-            bg=self.colors["card_strong"],
+            bg="#FFFFFF",
             highlightthickness=1,
             highlightbackground=self.colors["border"],
             padx=12,
             pady=10,
         )
         model_info.pack(fill="x", pady=(10, 0))
-        self._make_labeled_info_row(model_info, "설명", self.model_meta_var, bg=self.colors["card_strong"], wraplength=860)
-        self._make_labeled_info_row(model_info, "상태", self.model_status_summary_var, bg=self.colors["card_strong"], wraplength=860)
-        self._make_labeled_info_row(model_info, "캐시 위치", self.model_cache_path_var, bg=self.colors["card_strong"], wraplength=860)
+        self._make_labeled_info_row(model_info, "설명", self.model_meta_var, bg="#FFFFFF", wraplength=860)
+        self._make_labeled_info_row(model_info, "상태", self.model_status_summary_var, bg="#FFFFFF", wraplength=860)
+        self._make_labeled_info_row(model_info, "캐시 위치", self.model_cache_path_var, bg="#FFFFFF", wraplength=860)
     
-        device_wrap = tk.Frame(self.advanced_options_panel, bg=self.colors["panel"], highlightthickness=1, highlightbackground=self.colors["border"], padx=12, pady=10)
+        device_wrap = tk.Frame(self.advanced_options_panel, bg="#F8FAFC", highlightthickness=1, highlightbackground=self.colors["border"], padx=12, pady=10)
         device_wrap.pack(fill="x", pady=(0, 8))
-        top_device = tk.Frame(device_wrap, bg=self.colors["panel"])
+        top_device = tk.Frame(device_wrap, bg="#F8FAFC")
         top_device.pack(fill="x")
-        tk.Label(top_device, text="장치 선호", bg=self.colors["panel"], fg=self.colors["text"], font=self.font_body_bold).pack(side="left")
-        action_wrap = tk.Frame(top_device, bg=self.colors["panel"])
+        tk.Label(top_device, text="장치 선호", bg="#F8FAFC", fg=self.colors["text"], font=self.font_body_bold).pack(side="left")
+        action_wrap = tk.Frame(top_device, bg="#F8FAFC")
         action_wrap.pack(side="right")
         self._make_button(action_wrap, "시스템 점검", self.start_system_check, kind="soft").pack(side="left", padx=(0, 8))
         self._make_button(action_wrap, "설정 저장", self.save_ui_settings, kind="secondary").pack(side="left")
-        button_row = tk.Frame(device_wrap, bg=self.colors["panel"])
+        button_row = tk.Frame(device_wrap, bg="#F8FAFC")
         button_row.pack(fill="x", pady=(8, 0))
         self.device_buttons = {}
         for idx, (value, label_text) in enumerate([("auto", "자동"), ("cuda", "GPU"), ("cpu", "CPU")]):
             btn = self._make_button(button_row, label_text, lambda v=value: self._set_preferred_device(v), kind="soft", width=10)
             btn.pack(side="left", padx=(0, 8 if idx < 2 else 0))
             self.device_buttons[value] = btn
-        tk.Label(device_wrap, textvariable=self.device_note_var, bg=self.colors["panel"], fg=self.colors["subtext"], font=self.font_small, anchor="w", justify="left", wraplength=920).pack(anchor="w", pady=(8, 0))
+        tk.Label(device_wrap, textvariable=self.device_note_var, bg="#F8FAFC", fg=self.colors["subtext"], font=self.font_small, anchor="w", justify="left", wraplength=920).pack(anchor="w", pady=(8, 0))
     
         self._refresh_audio_enhance_buttons()
         self._refresh_output_format_buttons()
@@ -1532,7 +1386,7 @@ class SubtitleGUI(tk.Tk):
             for col, (key, label_text) in enumerate(rows):
                 tile = tk.Frame(
                     tiles,
-                    bg=self.colors["panel"],
+                    bg="#F8FAFC",
                     highlightthickness=1,
                     highlightbackground=self.colors["border"],
                     padx=12,
@@ -1541,13 +1395,13 @@ class SubtitleGUI(tk.Tk):
                 tile.grid(row=0, column=col, sticky="nsew", padx=(0, 8 if col < len(rows) - 1 else 0))
                 tiles.columnconfigure(col, weight=1)
     
-                head = tk.Frame(tile, bg=self.colors["panel"])
+                head = tk.Frame(tile, bg="#F8FAFC")
                 head.pack(fill="x")
     
                 tk.Label(
                     head,
                     text=label_text,
-                    bg=self.colors["panel"],
+                    bg="#F8FAFC",
                     fg=self.colors["subtext"],
                     font=self.font_small,
                     anchor="w",
@@ -1570,7 +1424,7 @@ class SubtitleGUI(tk.Tk):
                 tk.Label(
                     tile,
                     textvariable=summary_var,
-                    bg=self.colors["panel"],
+                    bg="#F8FAFC",
                     fg=self.colors["text"],
                     font=self.font_body,
                     justify="left",
@@ -1581,7 +1435,7 @@ class SubtitleGUI(tk.Tk):
                 tk.Label(
                     tile,
                     textvariable=meta_var,
-                    bg=self.colors["panel"],
+                    bg="#F8FAFC",
                     fg=self.colors["subtext"],
                     font=self.font_small,
                     justify="left",
@@ -1593,20 +1447,20 @@ class SubtitleGUI(tk.Tk):
     
             self.status_detail_panel = tk.Frame(
                 card,
-                bg=self.colors["panel"],
+                bg="#F8FAFC",
                 highlightthickness=1,
                 highlightbackground=self.colors["border"],
             )
     
             self.status_detail_labels = {}
             for idx, (key, label_text) in enumerate(rows):
-                row = tk.Frame(self.status_detail_panel, bg=self.colors["panel"])
+                row = tk.Frame(self.status_detail_panel, bg="#F8FAFC")
                 row.pack(fill="x", padx=16, pady=(12 if idx == 0 else 4, 4))
     
                 tk.Label(
                     row,
                     text=label_text,
-                    bg=self.colors["panel"],
+                    bg="#F8FAFC",
                     fg=self.colors["text"],
                     font=self.font_body_bold,
                     width=10,
@@ -1614,7 +1468,7 @@ class SubtitleGUI(tk.Tk):
                     justify="left",
                 ).pack(side="left", anchor="n", padx=(0, 12))
     
-                content = tk.Frame(row, bg=self.colors["panel"])
+                content = tk.Frame(row, bg="#F8FAFC")
                 content.pack(side="left", fill="x", expand=True)
     
                 summary_var = tk.StringVar(value="확인 중입니다.")
@@ -1623,7 +1477,7 @@ class SubtitleGUI(tk.Tk):
                 tk.Label(
                     content,
                     textvariable=summary_var,
-                    bg=self.colors["panel"],
+                    bg="#F8FAFC",
                     fg=self.colors["text"],
                     font=self.font_body,
                     anchor="w",
@@ -1634,7 +1488,7 @@ class SubtitleGUI(tk.Tk):
                 tk.Label(
                     content,
                     textvariable=detail_var,
-                    bg=self.colors["panel"],
+                    bg="#F8FAFC",
                     fg=self.colors["subtext"],
                     font=self.font_small,
                     anchor="w",
@@ -1675,7 +1529,7 @@ class SubtitleGUI(tk.Tk):
             bg=self.colors["log_bg"],
             fg=self.colors["log_fg"],
             insertbackground=self.colors["text"],
-            selectbackground=self.colors["selection"],
+            selectbackground="#DBEAFE",
             relief="flat",
             bd=0,
             font=self.font_body,
@@ -1685,7 +1539,7 @@ class SubtitleGUI(tk.Tk):
         )
         self.log_text.pack(side="left", fill="both", expand=True)
 
-        scroll = ttk.Scrollbar(log_wrap, orient="vertical", command=self.log_text.yview, style="Modern.Vertical.TScrollbar")
+        scroll = ttk.Scrollbar(log_wrap, orient="vertical", command=self.log_text.yview)
         scroll.pack(side="right", fill="y")
         self.log_text.configure(yscrollcommand=scroll.set)
         self.log_text.tag_configure("timestamp", font=self.font_mono, foreground=self.colors["accent"])
@@ -1693,25 +1547,17 @@ class SubtitleGUI(tk.Tk):
         self.log_text.tag_configure("message_text", font=self.font_body, foreground=self.colors["log_fg"])
 
     def _build_bottom_dock(self):
-        dock_host = tk.Frame(self, bg=self.colors["bg"])
-        dock_host.pack(side="bottom", fill="x", padx=16, pady=(0, 16))
-
-        shadow = tk.Frame(dock_host, bg=self.colors["shadow_strong"], bd=0, highlightthickness=0)
-        shadow.pack(fill="x", padx=2, pady=2)
-
         dock = tk.Frame(
-            shadow,
+            self,
             bg=self.colors["dock"],
             highlightthickness=1,
             highlightbackground=self.colors["border"],
-            padx=18,
-            pady=16,
         )
-        dock.pack(fill="x", padx=1, pady=1)
+        dock.pack(side="bottom", fill="x")
         self.bottom_dock = dock
 
         top = tk.Frame(dock, bg=self.colors["dock"])
-        top.pack(fill="x")
+        top.pack(fill="x", padx=18, pady=(12, 8))
 
         actions = tk.Frame(top, bg=self.colors["dock"])
         actions.pack(side="left")
@@ -1734,21 +1580,21 @@ class SubtitleGUI(tk.Tk):
 
         resource = tk.Frame(
             top,
-            bg=self.colors["card_strong"],
+            bg="#FFFFFF",
             highlightthickness=1,
             highlightbackground=self.colors["border"],
-            padx=14,
-            pady=12,
+            padx=12,
+            pady=10,
         )
-        resource.pack(side="right", fill="x", expand=True, padx=(18, 0))
+        resource.pack(side="right", fill="x", expand=True, padx=(16, 0))
 
-        resource_head = tk.Frame(resource, bg=self.colors["card_strong"])
+        resource_head = tk.Frame(resource, bg="#FFFFFF")
         resource_head.pack(fill="x")
 
         tk.Label(
             resource_head,
             text="작업 중 자원 상태",
-            bg=self.colors["card_strong"],
+            bg="#FFFFFF",
             fg=self.colors["text"],
             font=self.font_body_bold,
         ).pack(side="left")
@@ -1756,8 +1602,8 @@ class SubtitleGUI(tk.Tk):
         self.resource_badge = tk.Label(
             resource_head,
             text="점검 중",
-            bg=self.colors["panel_alt"],
-            fg=self.colors["subtext"],
+            bg="#E5E7EB",
+            fg="#374151",
             font=self.font_badge,
             padx=8,
             pady=3,
@@ -1769,7 +1615,7 @@ class SubtitleGUI(tk.Tk):
         tk.Label(
             resource,
             textvariable=self.resource_summary_var,
-            bg=self.colors["card_strong"],
+            bg="#FFFFFF",
             fg=self.colors["text"],
             font=self.font_small,
             anchor="w",
@@ -1780,7 +1626,7 @@ class SubtitleGUI(tk.Tk):
         tk.Label(
             resource,
             textvariable=self.resource_meta_var,
-            bg=self.colors["card_strong"],
+            bg="#FFFFFF",
             fg=self.colors["subtext"],
             font=self.font_small,
             anchor="w",
@@ -1788,7 +1634,7 @@ class SubtitleGUI(tk.Tk):
         ).pack(anchor="w", fill="x")
 
         status_row = tk.Frame(dock, bg=self.colors["dock"])
-        status_row.pack(fill="x", pady=(12, 6))
+        status_row.pack(fill="x", padx=18, pady=(0, 6))
 
         tk.Label(
             status_row,
@@ -1802,7 +1648,7 @@ class SubtitleGUI(tk.Tk):
         self.transfer_var = tk.StringVar(value="")
         self.transfer_meta_var = tk.StringVar(value="")
         transfer_row = tk.Frame(dock, bg=self.colors["dock"])
-        transfer_row.pack(fill="x", pady=(0, 8))
+        transfer_row.pack(fill="x", padx=18, pady=(0, 6))
 
         tk.Label(
             transfer_row,
@@ -1845,7 +1691,7 @@ class SubtitleGUI(tk.Tk):
         ).pack(anchor="w")
 
         progress_row = tk.Frame(dock, bg=self.colors["dock"])
-        progress_row.pack(fill="x")
+        progress_row.pack(fill="x", padx=18, pady=(0, 14))
 
         self.progress = ttk.Progressbar(
             progress_row,
@@ -1856,13 +1702,18 @@ class SubtitleGUI(tk.Tk):
         )
         self.progress.pack(fill="x")
 
+    # -------------------------------------------------
+    # Small UI state helpers
+    # -------------------------------------------------
     def _refresh_device_buttons(self):
         if not hasattr(self, "device_buttons"):
             return
         current = self.current_preferred_device()
         for key, btn in self.device_buttons.items():
-            palette = self._button_palette("primary" if key == current else "soft")
-            self._apply_button_palette(btn, palette, hovered=False)
+            if key == current:
+                btn.configure(bg=self.colors["accent"], fg="#FFFFFF", activebackground=self.colors["accent_hover"], activeforeground="#FFFFFF")
+            else:
+                btn.configure(bg="#F1F5F9", fg=self.colors["text"], activebackground="#E2E8F0", activeforeground=self.colors["text"])
 
     def _level_to_badge_text(self, level: str) -> str:
         return {
@@ -2169,27 +2020,35 @@ class SubtitleGUI(tk.Tk):
         for child in self.file_list_wrap.winfo_children():
             child.destroy()
         if not self.input_files:
-            tk.Label(self.file_list_wrap, text="아직 목록이 비어 있습니다.", bg=self.colors["card_strong"], fg=self.colors["subtext"], font=self.font_small, anchor="w").pack(anchor="w")
+            tk.Label(self.file_list_wrap, text="아직 목록이 비어 있습니다.", bg=self.colors["card"], fg=self.colors["subtext"], font=self.font_small, anchor="w").pack(anchor="w")
             return
         for path in self.input_files:
-            row = tk.Frame(self.file_list_wrap, bg=self.colors["panel"], highlightthickness=1, highlightbackground=self.colors["border"])
-            row.pack(fill="x", pady=(0, 8))
-            text_wrap = tk.Frame(row, bg=self.colors["panel"])
-            text_wrap.pack(side="left", fill="x", expand=True, padx=12, pady=10)
-            tk.Label(text_wrap, text=os.path.basename(path), bg=self.colors["panel"], fg=self.colors["text"], font=self.font_body_bold, anchor="w").pack(anchor="w")
-            tk.Label(text_wrap, text=path, bg=self.colors["panel"], fg=self.colors["subtext"], font=self.font_small, anchor="w", justify="left", wraplength=880).pack(anchor="w", pady=(3, 0))
+            row = tk.Frame(self.file_list_wrap, bg="#F8FAFC", highlightthickness=1, highlightbackground=self.colors["border"])
+            row.pack(fill="x", pady=(0, 6))
+            text_wrap = tk.Frame(row, bg="#F8FAFC")
+            text_wrap.pack(side="left", fill="x", expand=True, padx=10, pady=8)
+            tk.Label(text_wrap, text=os.path.basename(path), bg="#F8FAFC", fg=self.colors["text"], font=self.font_body_bold, anchor="w").pack(anchor="w")
+            tk.Label(text_wrap, text=path, bg="#F8FAFC", fg=self.colors["subtext"], font=self.font_small, anchor="w", justify="left", wraplength=880).pack(anchor="w", pady=(2, 0))
             self._make_button(row, "✕", lambda p=path: self._remove_input_file(p), kind="soft", width=3).pack(side="right", padx=8, pady=8)
-
+    
     def _set_audio_enhance_level(self, value: str):
         self.audio_enhance_value_var.set(value if value in {"off", "standard", "strong"} else DEFAULT_AUDIO_ENHANCE_LEVEL)
         self._refresh_audio_enhance_buttons()
     
     def _refresh_audio_enhance_buttons(self):
+        mapping = {
+            "off": "soft",
+            "standard": "soft",
+            "strong": "soft",
+        }
         selected = self.current_audio_enhance_level()
         for value, btn in getattr(self, "audio_enhance_buttons", {}).items():
-            palette = self._button_palette("primary" if value == selected else "soft")
-            self._apply_button_palette(btn, palette, hovered=False)
-
+            palette = "primary" if value == selected else "soft"
+            bg = self.colors["accent"] if palette == "primary" else "#F1F5F9"
+            fg = "#FFFFFF" if palette == "primary" else self.colors["text"]
+            activebg = self.colors["accent_hover"] if palette == "primary" else "#E2E8F0"
+            btn.configure(bg=bg, fg=fg, activebackground=activebg, activeforeground=fg)
+    
     def _toggle_output_format(self, value: str):
         var = getattr(self, f"output_fmt_{value}_var", None)
         if var is None:
@@ -2203,9 +2062,12 @@ class SubtitleGUI(tk.Tk):
     def _refresh_output_format_buttons(self):
         selected = set(self.current_output_formats())
         for fmt, btn in getattr(self, "output_format_buttons", {}).items():
-            palette = self._button_palette("primary" if fmt in selected else "soft")
-            self._apply_button_palette(btn, palette, hovered=False)
-
+            palette = "primary" if fmt in selected else "soft"
+            bg = self.colors["accent"] if palette == "primary" else "#F1F5F9"
+            fg = "#FFFFFF" if palette == "primary" else self.colors["text"]
+            activebg = self.colors["accent_hover"] if palette == "primary" else "#E2E8F0"
+            btn.configure(bg=bg, fg=fg, activebackground=activebg, activeforeground=fg)
+    
     def _toggle_advanced_options(self):
         self.advanced_options_visible = not self.advanced_options_visible
         if self.advanced_options_visible:
