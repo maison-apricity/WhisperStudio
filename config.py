@@ -2,7 +2,7 @@
 
 APP_NAME = "Whisper Studio"
 APP_VERSION = "0.9.1"
-APP_TAGLINE = "Whisper Studio는 OpenAI의 Whisper 엔진을 사용하여 영상 및 음성 파일에서 스크립트를 전사합니다."
+APP_TAGLINE = "오디오·비디오를 텍스트와 자막 파일로 변환합니다."
 
 DEFAULT_LANGUAGE = "auto"
 DEFAULT_MODEL_ID = "large-v3-turbo"
@@ -70,9 +70,9 @@ TRANSCRIPTION_PRESETS = [
     {
         "id": "auto-balanced",
         "label": "균형",
-        "short_note": "기본값 · 속도와 품질의 균형",
-        "long_note": "파일 성격을 확신하기 어려울 때 사용하는 기본 프리셋입니다. 속도와 정확도의 균형을 우선합니다.",
-        "display": "기본값 · 균형",
+        "short_note": "균형형",
+        "long_note": "일반 입력용 기본 설정입니다.",
+        "display": "균형",
         "beam_size": 5,
         "vad_min_speech_ms": 250,
         "vad_min_silence_ms": 1200,
@@ -86,9 +86,9 @@ TRANSCRIPTION_PRESETS = [
     {
         "id": "lecture-meeting",
         "label": "강의 / 회의",
-        "short_note": "긴 문장과 연속 발화에 유리",
-        "long_note": "한 명 또는 소수 화자의 연속 발화가 많은 강의, 발표, 회의 녹음에 적합한 프리셋입니다.",
-        "display": "연속 발화 · 강의 / 회의",
+        "short_note": "연속 발화",
+        "long_note": "강의, 발표, 회의처럼 긴 발화가 이어지는 입력에 맞춥니다.",
+        "display": "강의 / 회의",
         "beam_size": 6,
         "vad_min_speech_ms": 220,
         "vad_min_silence_ms": 900,
@@ -102,9 +102,9 @@ TRANSCRIPTION_PRESETS = [
     {
         "id": "dialogue-video",
         "label": "영화 / 드라마 / 인터뷰",
-        "short_note": "짧은 대사 전환과 장면 변화에 적응",
-        "long_note": "화자 전환이 잦은 영상 대사에 맞춘 프리셋입니다. 문맥 끌림보다 장면 단위 분리를 조금 더 우선합니다.",
-        "display": "대사형 · 영화 / 드라마 / 인터뷰",
+        "short_note": "대사 전환",
+        "long_note": "인터뷰, 영화, 드라마처럼 짧은 대사 전환이 잦은 입력에 맞춥니다.",
+        "display": "영화 / 드라마 / 인터뷰",
         "beam_size": 5,
         "vad_min_speech_ms": 180,
         "vad_min_silence_ms": 700,
@@ -118,9 +118,9 @@ TRANSCRIPTION_PRESETS = [
     {
         "id": "noisy-performance",
         "label": "공연 / 현장 / 잡음 많은 소스",
-        "short_note": "배경음과 잔향이 큰 환경용",
-        "long_note": "콘서트, 현장 녹음, 잡음이 많은 파일처럼 음성 검출이 까다로운 환경을 위한 보수적 프리셋입니다.",
-        "display": "잡음 대응 · 공연 / 현장",
+        "short_note": "잡음 대응",
+        "long_note": "현장 녹음, 공연, 잡음 많은 소스처럼 음성 검출이 까다로운 입력에 맞춥니다.",
+        "display": "공연 / 현장",
         "beam_size": 4,
         "vad_min_speech_ms": 380,
         "vad_min_silence_ms": 1600,
@@ -134,9 +134,9 @@ TRANSCRIPTION_PRESETS = [
     {
         "id": "speed-priority",
         "label": "속도 우선",
-        "short_note": "빠른 초안 확인용",
-        "long_note": "미리보기나 저사양 장치에서 빠르게 결과를 확인하려는 경우에 적합합니다. 정확도보다 처리 속도를 우선합니다.",
-        "display": "고속 처리 · 속도 우선",
+        "short_note": "빠른 초안",
+        "long_note": "초안 확인과 저사양 환경을 위해 처리 속도를 우선합니다.",
+        "display": "속도 우선",
         "beam_size": 2,
         "vad_min_speech_ms": 260,
         "vad_min_silence_ms": 1400,
@@ -150,9 +150,9 @@ TRANSCRIPTION_PRESETS = [
     {
         "id": "quality-priority",
         "label": "정확도 우선",
-        "short_note": "시간이 더 걸려도 품질을 우선",
-        "long_note": "처리 시간이 늘어나더라도 정확도를 최대한 확보하고 싶을 때 사용하는 프리셋입니다.",
-        "display": "고품질 처리 · 정확도 우선",
+        "short_note": "품질 우선",
+        "long_note": "처리 시간이 늘어나도 정확도를 우선합니다.",
+        "display": "정확도 우선",
         "beam_size": 7,
         "vad_min_speech_ms": 220,
         "vad_min_silence_ms": 1100,

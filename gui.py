@@ -1,46 +1,28 @@
 # -*- coding: utf-8 -*-
+"""
+WhisperStudio redesigned GUI.
+
+This module intentionally keeps the public entry point compatible with app.py:
+
+    app = SubtitleGUI()
+    app.mainloop()
+
+The implementation uses only Python's standard Tkinter/ttk stack so that the
+application does not depend on PySide6 at runtime.
+"""
+
+from __future__ import annotations
 
 import os
 import queue
-import subprocess
-import sys
 import threading
 import time
 import traceback
-import ctypes
-from pathlib import Path
+from dataclasses import dataclass
+from typing import Callable
 
-from PySide6.QtCore import Qt, QTimer, QRect, QSize
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient, QPixmap
-from PySide6.QtWidgets import (
-    QApplication,
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFileDialog,
-    QFrame,
-    QGraphicsDropShadowEffect,
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
-    QListWidget,
-    QListWidgetItem,
-    QMainWindow,
-    QMessageBox,
-    QPlainTextEdit,
-    QProgressBar,
-    QPushButton,
-    QScrollArea,
-    QSizeGrip,
-    QSizePolicy,
-    QSpacerItem,
-    QStackedWidget,
-    QStyle,
-    QToolButton,
-    QVBoxLayout,
-    QWidget,
-)
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 
 from config import (
     APP_NAME,
@@ -48,2347 +30,1055 @@ from config import (
     APP_VERSION,
     DEFAULT_AUDIO_ENHANCE_LEVEL,
     DEFAULT_LANGUAGE,
+    DEFAULT_MODEL_ID,
     DEFAULT_OUTPUT_FORMATS,
     DEFAULT_PREFERRED_DEVICE,
     DEFAULT_PRESET_ID,
-    LANGUAGE_NATIVE_NAMES,
     LANGUAGE_OPTIONS,
     TRANSCRIPTION_PRESETS,
-    get_language_korean_name,
-    get_transcription_preset,
 )
 from env_manager import (
-    choose_runtime_device_and_type,
     collect_live_resource_status,
     collect_startup_status,
     download_model_to_cache,
     inspect_model_availability,
+    choose_runtime_device_and_type,
 )
-from model_catalog import MODEL_CATALOG, default_model_id
-from paths import bundled_icon_path, clear_temp_work_dir
+from model_catalog import MODEL_CATALOG, get_model_entry
+from paths import bundled_icon_path
 from settings_manager import load_settings, save_settings
-from subtitle_engine import probe_media_duration_seconds, run_transcription_job
+from subtitle_engine import run_transcription_job
 
 
-DWM_SYSTEMBACKDROP_TYPE = 38
-DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-DWMWA_REDIRECTIONBITMAP_ALPHA = 40
-DWMSBT_AUTO = 0
-DWMSBT_NONE = 1
-DWMSBT_MAINWINDOW = 2
-DWMSBT_TRANSIENTWINDOW = 3
-DWMSBT_TABBEDWINDOW = 4
-WM_DWMCOMPOSITIONCHANGED = 0x031E
-WM_THEMECHANGED = 0x031A
-WM_SETTINGCHANGE = 0x001A
-
-
-class MARGINS(ctypes.Structure):
-    _fields_ = [
-        ("cxLeftWidth", ctypes.c_int),
-        ("cxRightWidth", ctypes.c_int),
-        ("cyTopHeight", ctypes.c_int),
-        ("cyBottomHeight", ctypes.c_int),
-    ]
-
-
-COLOR = {
-    "shell": QColor(248, 244, 250, 118),
-    "shell_edge": QColor(255, 255, 255, 96),
-    "panel_top": QColor(255, 255, 255, 24),
-    "panel_mid": QColor(250, 247, 252, 18),
-    "panel_bottom": QColor(246, 241, 249, 12),
-    "panel_gloss": QColor(255, 255, 255, 86),
-    "panel_edge": QColor(255, 255, 255, 68),
-    "panel_edge_inner": QColor(255, 255, 255, 20),
-    "panel_shadow": QColor(72, 44, 96, 22),
-    "text": QColor(44, 37, 54),
-    "muted": QColor(103, 94, 114),
-    "soft": QColor(126, 118, 136),
-    "accent": QColor(244, 153, 124),
-    "accent_2": QColor(201, 138, 255),
-    "accent_3": QColor(111, 196, 255),
-    "success": QColor(88, 176, 129),
-    "warning": QColor(214, 155, 82),
-    "danger": QColor(216, 112, 112),
-    "info": QColor(112, 159, 219),
-    "neutral": QColor(168, 157, 172),
-    "track": QColor(255, 255, 255, 72),
-    "fill": QColor(244, 153, 124),
+SUPPORTED_MEDIA_EXTS = {
+    ".mkv",
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".flac",
+    ".ogg",
+    ".webm",
 }
 
-
-def compact_path_for_display(path: str, keep_tail: int = 3) -> str:
-    if not path:
-        return ""
-    p = Path(path)
-    parts = list(p.parts)
-    if len(parts) <= keep_tail + 1:
-        return str(p)
-    return str(Path("…", *parts[-keep_tail:]))
-
-
-def format_elapsed_text(seconds: float | int | None) -> str:
-    if seconds is None:
-        return "--:--"
-    total = max(0, int(seconds))
-    hours, rem = divmod(total, 3600)
-    minutes, secs = divmod(rem, 60)
-    if hours:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
-
-
-def open_path(path: str) -> None:
-    if not path:
-        return
-    if os.name == "nt":
-        os.startfile(path)
-        return
-    if sys.platform == "darwin":
-        subprocess.Popen(["open", path])
-        return
-    subprocess.Popen(["xdg-open", path])
-
-
-def apply_windows_backdrop(widget: QWidget) -> None:
-    if os.name != "nt":
-        return
-    try:
-        hwnd = int(widget.winId())
-    except Exception:
-        return
-
-    try:
-        margins = MARGINS(-1, -1, -1, -1)
-        ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
-    except Exception:
-        pass
-
-    try:
-        dark = ctypes.c_int(0)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(dark), ctypes.sizeof(dark))
-    except Exception:
-        pass
-
-    for backdrop in (DWMSBT_TRANSIENTWINDOW, DWMSBT_MAINWINDOW):
-        try:
-            value = ctypes.c_int(backdrop)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, DWM_SYSTEMBACKDROP_TYPE, ctypes.byref(value), ctypes.sizeof(value))
-            break
-        except Exception:
-            continue
-
-    try:
-        alpha = ctypes.c_int(1)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_REDIRECTIONBITMAP_ALPHA, ctypes.byref(alpha), ctypes.sizeof(alpha))
-    except Exception:
-        pass
-
-
-_TEXTURE_CACHE: dict[tuple[int, int], QPixmap] = {}
-
-
-def _build_frost_texture(size: int = 160, tint: int = 0) -> QPixmap:
-    key = (size, tint)
-    if key in _TEXTURE_CACHE:
-        return _TEXTURE_CACHE[key]
-    pix = QPixmap(size, size)
-    pix.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pix)
-    try:
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        for y in range(0, size, 6):
-            for x in range(0, size, 6):
-                seed = (x * 92821 + y * 68917 + tint * 131) % 97
-                if seed % 5 == 0:
-                    a = 6 + seed % 16
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QColor(255, 255 - tint, 255, a))
-                    painter.drawEllipse(x, y, 2 + seed % 3, 2 + seed % 3)
-                elif seed % 7 == 0:
-                    painter.setPen(QPen(QColor(255, 245, 255, 6 + seed % 10), 1.0))
-                    painter.drawLine(x, y, x + 3, y + 1)
-        for i in range(0, size, 20):
-            glow = QRadialGradient(i + 10, (i * 7) % size, 28)
-            glow.setColorAt(0.0, QColor(255, 255, 255, 12))
-            glow.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(glow)
-            painter.drawEllipse(i - 12, (i * 7) % size - 12, 56, 56)
-    finally:
-        painter.end()
-    _TEXTURE_CACHE[key] = pix
-    return pix
-
-
-def paint_frost_texture(painter: QPainter, rect: QRect, opacity: float = 0.12, tint: int = 0) -> None:
-    if rect.width() <= 0 or rect.height() <= 0:
-        return
-    tex = _build_frost_texture(168, tint)
-    painter.save()
-    painter.setOpacity(opacity)
-    painter.drawTiledPixmap(rect, tex)
-    painter.restore()
-
-
-def draw_glass_button(painter: QPainter, rect: QRect, *, radius: int, role: str, hovered: bool, pressed: bool, checked: bool, enabled: bool):
-    path = QPainterPath()
-    path.addRoundedRect(rect.adjusted(1, 1, -1, -1), radius, radius)
-
-    if role == "primary" or checked:
-        base = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-        base.setColorAt(0.0, QColor(255, 194, 210, 226 if enabled else 162))
-        base.setColorAt(0.45, QColor(241, 157, 199, 220 if enabled else 154))
-        base.setColorAt(1.0, QColor(155, 207, 255, 212 if enabled else 148))
-        edge = QColor(255, 255, 255, 110 if enabled else 70)
-    elif role == "danger":
-        base = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-        base.setColorAt(0.0, QColor(255, 255, 255, 88 if enabled else 32))
-        base.setColorAt(1.0, QColor(255, 207, 207, 66 if enabled else 24))
-        edge = QColor(255, 184, 184, 82 if enabled else 42)
-    else:
-        base = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-        base.setColorAt(0.0, QColor(255, 255, 255, 94 if enabled else 34))
-        base.setColorAt(0.5, QColor(255, 255, 255, 72 if enabled else 24))
-        base.setColorAt(1.0, QColor(240, 232, 246, 56 if enabled else 18))
-        edge = QColor(255, 255, 255, 82 if enabled else 36)
-
-    if hovered and enabled:
-        boost = QRadialGradient(rect.center(), max(rect.width(), rect.height()) * 0.9)
-        boost.setColorAt(0.0, QColor(255, 255, 255, 18))
-        boost.setColorAt(1.0, QColor(255, 255, 255, 0))
-    else:
-        boost = None
-
-    if pressed and enabled:
-        painter.save()
-        painter.setOpacity(0.94)
-
-    painter.fillPath(path, base)
-    painter.save()
-    painter.setClipPath(path)
-    sheen = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.top() + rect.height() * 0.5)
-    sheen.setColorAt(0.0, QColor(255, 255, 255, 76 if enabled else 26))
-    sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
-    painter.fillRect(rect, sheen)
-    bottom = QLinearGradient(rect.left(), rect.bottom(), rect.left(), rect.bottom() - rect.height() * 0.45)
-    bottom.setColorAt(0.0, QColor(120, 96, 150, 20 if enabled else 10))
-    bottom.setColorAt(1.0, QColor(255, 255, 255, 0))
-    painter.fillRect(rect, bottom)
-    paint_frost_texture(painter, rect.adjusted(2, 2, -2, -2), 0.20 if role == "soft" else 0.16, 8 if role == "primary" else 0)
-    if boost is not None:
-        painter.fillRect(rect, boost)
-    painter.restore()
-
-    painter.setPen(QPen(edge, 1.0))
-    painter.drawPath(path)
-    inner = rect.adjusted(2, 2, -2, -2)
-    inner_path = QPainterPath()
-    inner_path.addRoundedRect(inner, max(0, radius - 2), max(0, radius - 2))
-    painter.setPen(QPen(QColor(255, 255, 255, 24 if enabled else 10), 1.0))
-    painter.drawPath(inner_path)
-
-    if pressed and enabled:
-        painter.restore()
-
-
-class TexturedButton(QPushButton):
-    def __init__(self, text: str, role: str = "soft", radius: int = 16, parent: QWidget | None = None):
-        super().__init__(text, parent)
-        self.role = role
-        self.radius = radius
-        self._hovered = False
-        self._pressed = False
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setCheckable(False)
-        self.setMinimumHeight(42)
-        self.setMinimumWidth(92)
-        self.setStyleSheet("background: transparent; border: none;")
-
-    def enterEvent(self, event):
-        self._hovered = True
-        self.update()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self._hovered = False
-        self.update()
-        super().leaveEvent(event)
-
-    def mousePressEvent(self, event):
-        self._pressed = True
-        self.update()
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self._pressed = False
-        self.update()
-        super().mouseReleaseEvent(event)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        draw_glass_button(painter, self.rect(), radius=self.radius, role=self.role, hovered=self._hovered, pressed=self._pressed, checked=self.isChecked(), enabled=self.isEnabled())
-        painter.setPen(QPen(QColor(255,255,255,250) if self.role == "primary" or self.isChecked() else QColor(54,42,66,248 if self.isEnabled() else 132)))
-        painter.setFont(self.font())
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
-        painter.end()
-
-
-class FrostedPanel(QFrame):
-    def __init__(self, radius: int = 24, parent: QWidget | None = None):
-        super().__init__(parent)
-        self._radius = radius
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(30)
-        shadow.setOffset(0, 12)
-        shadow.setColor(COLOR["panel_shadow"])
-        self.setGraphicsEffect(shadow)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            rect = self.rect().adjusted(1, 1, -1, -1)
-            if rect.width() <= 2 or rect.height() <= 2:
-                return
-            path = QPainterPath()
-            path.addRoundedRect(rect, self._radius, self._radius)
-
-            base = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
-            base.setColorAt(0.0, QColor(255, 255, 255, 24))
-            base.setColorAt(0.38, QColor(248, 242, 252, 15))
-            base.setColorAt(1.0, QColor(240, 233, 248, 10))
-            painter.fillPath(path, base)
-
-            painter.save()
-            painter.setClipPath(path)
-            gloss = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.top() + rect.height() * 0.45)
-            gloss.setColorAt(0.0, QColor(255, 255, 255, 64))
-            gloss.setColorAt(0.25, QColor(255, 255, 255, 18))
-            gloss.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.fillRect(rect, gloss)
-
-            bloom = QRadialGradient(rect.left() + rect.width() * 0.2, rect.top() + rect.height() * 0.15, rect.width() * 0.9)
-            bloom.setColorAt(0.0, QColor(255, 196, 223, 36))
-            bloom.setColorAt(0.45, QColor(190, 216, 255, 28))
-            bloom.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.fillRect(rect, bloom)
-
-            side_haze = QLinearGradient(rect.left(), rect.center().y(), rect.right(), rect.center().y())
-            side_haze.setColorAt(0.0, QColor(255, 255, 255, 8))
-            side_haze.setColorAt(0.5, QColor(255, 255, 255, 0))
-            side_haze.setColorAt(1.0, QColor(255, 255, 255, 10))
-            painter.fillRect(rect, side_haze)
-            paint_frost_texture(painter, rect.adjusted(2, 2, -2, -2), 0.16)
-            painter.restore()
-
-            painter.setPen(QPen(COLOR["panel_edge"], 1.0))
-            painter.drawPath(path)
-            inner = rect.adjusted(2, 2, -2, -2)
-            inner_path = QPainterPath()
-            inner_path.addRoundedRect(inner, max(0, self._radius - 2), max(0, self._radius - 2))
-            painter.setPen(QPen(COLOR["panel_edge_inner"], 1.0))
-            painter.drawPath(inner_path)
-        finally:
-            painter.end()
-
-
-class BackdropSurface(QWidget):
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            rect = self.rect()
-            painter.fillRect(rect, Qt.GlobalColor.transparent)
-
-            shell_rect = rect.adjusted(6, 6, -6, -6)
-            shell_path = QPainterPath()
-            shell_path.addRoundedRect(shell_rect, 32, 32)
-            shell_fill = QLinearGradient(shell_rect.left(), shell_rect.top(), shell_rect.right(), shell_rect.bottom())
-            shell_fill.setColorAt(0.0, QColor(251, 246, 252, 118))
-            shell_fill.setColorAt(0.45, QColor(245, 240, 251, 108))
-            shell_fill.setColorAt(1.0, QColor(240, 236, 248, 98))
-            painter.fillPath(shell_path, shell_fill)
-            painter.setPen(QPen(COLOR["shell_edge"], 1.0))
-            painter.drawPath(shell_path)
-
-            painter.save()
-            painter.setClipPath(shell_path)
-
-            ambient = QLinearGradient(shell_rect.topLeft(), shell_rect.bottomRight())
-            ambient.setColorAt(0.0, QColor(255, 255, 255, 30))
-            ambient.setColorAt(0.38, QColor(249, 220, 243, 36))
-            ambient.setColorAt(1.0, QColor(208, 230, 255, 34))
-            painter.fillRect(shell_rect, ambient)
-
-            orbs = [
-                (QColor(255, 180, 214, 132), QRect(shell_rect.left() - 80, shell_rect.top() + 86, 320, 320)),
-                (QColor(161, 222, 255, 118), QRect(shell_rect.right() - 330, shell_rect.top() - 20, 310, 310)),
-                (QColor(211, 170, 255, 110), QRect(shell_rect.left() + 220, shell_rect.bottom() - 250, 360, 280)),
-                (QColor(255, 214, 156, 76), QRect(shell_rect.right() - 300, shell_rect.bottom() - 230, 250, 250)),
-            ]
-            for color, orb_rect in orbs:
-                orb = QRadialGradient(orb_rect.center(), max(orb_rect.width(), orb_rect.height()) * 0.52)
-                c0 = QColor(color)
-                c1 = QColor(color)
-                c2 = QColor(color)
-                c1.setAlpha(max(0, c1.alpha() // 2))
-                c2.setAlpha(0)
-                orb.setColorAt(0.0, c0)
-                orb.setColorAt(0.55, c1)
-                orb.setColorAt(1.0, c2)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(orb)
-                painter.drawEllipse(orb_rect)
-
-            ribbons = [
-                (QRect(shell_rect.left() + 58, shell_rect.bottom() - 195, 420, 98), 18, QColor(255, 255, 255, 38), QColor(255, 181, 215, 26)),
-                (QRect(shell_rect.right() - 420, shell_rect.top() + 76, 300, 74), -26, QColor(174, 224, 255, 34), QColor(255, 255, 255, 10)),
-            ]
-            for cap_rect, angle, c0, c1 in ribbons:
-                painter.save()
-                painter.translate(cap_rect.center())
-                painter.rotate(angle)
-                local = QRect(-cap_rect.width() // 2, -cap_rect.height() // 2, cap_rect.width(), cap_rect.height())
-                cap_grad = QLinearGradient(local.topLeft(), local.bottomRight())
-                cap_grad.setColorAt(0.0, c0)
-                cap_grad.setColorAt(1.0, c1)
-                painter.setPen(QPen(QColor(255, 255, 255, 28), 1.0))
-                painter.setBrush(cap_grad)
-                painter.drawRoundedRect(local, local.height() / 2, local.height() / 2)
-                painter.restore()
-
-            ring_center_x = shell_rect.right() - 170
-            ring_center_y = shell_rect.bottom() - 110
-            outer = QRadialGradient(ring_center_x, ring_center_y, 190)
-            outer.setColorAt(0.0, QColor(255, 188, 225, 30))
-            outer.setColorAt(0.55, QColor(165, 207, 255, 26))
-            outer.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(outer)
-            painter.drawEllipse(QRect(ring_center_x - 190, ring_center_y - 190, 380, 380))
-
-            top_haze = QLinearGradient(shell_rect.left(), shell_rect.top(), shell_rect.left(), shell_rect.top() + 170)
-            top_haze.setColorAt(0.0, QColor(255, 255, 255, 62))
-            top_haze.setColorAt(0.3, QColor(255, 255, 255, 16))
-            top_haze.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.fillRect(shell_rect, top_haze)
-            paint_frost_texture(painter, shell_rect.adjusted(4, 4, -4, -4), 0.05, 8)
-            painter.restore()
-        finally:
-            painter.end()
-
-
-class SidebarButton(TexturedButton):
-    def __init__(self, text: str, parent: QWidget | None = None):
-        super().__init__(text, role="soft", radius=18, parent=parent)
-        self.setCheckable(True)
-        self.setMinimumHeight(46)
-        self.setFont(QFont(self.font().family(), self.font().pointSize(), QFont.Weight.DemiBold))
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        draw_glass_button(painter, self.rect(), radius=self.radius, role="primary" if self.isChecked() else "soft", hovered=self._hovered, pressed=self._pressed, checked=self.isChecked(), enabled=self.isEnabled())
-        painter.setPen(QPen(QColor(255,255,255,245) if self.isChecked() else QColor(62,50,66,240)))
-        painter.drawText(self.rect().adjusted(16, 0, -16, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text())
-        painter.end()
-
-
-class ChipButton(TexturedButton):
-    def __init__(self, text: str, parent: QWidget | None = None):
-        super().__init__(text, parent)
-        self.setCheckable(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(46)
-        self.setStyleSheet(
-            """
-            QPushButton {
-                color: rgba(62,50,66,0.94);
-                background: rgba(255,255,255,0.16);
-                border: 1px solid rgba(255,255,255,0.30);
-                border-radius: 18px;
-                padding: 12px 16px;
-                text-align: left;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: rgba(255,255,255,0.24);
-                border: 1px solid rgba(255,255,255,0.42);
-            }
-            QPushButton:checked {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(244,153,124,0.74),
-                    stop:0.55 rgba(233,133,173,0.78),
-                    stop:1 rgba(111,196,255,0.74));
-                border: 1px solid rgba(255,255,255,0.72);
-            }
-            """
-        )
-
-
-class ChipButton(TexturedButton):
-    def __init__(self, text: str, parent: QWidget | None = None):
-        super().__init__(text, role="soft", radius=14, parent=parent)
-        self.setCheckable(True)
-        self.setMinimumHeight(40)
-        self.setMinimumWidth(74)
-        self.setFont(QFont(self.font().family(), self.font().pointSize(), QFont.Weight.DemiBold))
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        draw_glass_button(painter, self.rect(), radius=self.radius, role="primary" if self.isChecked() else self.role, hovered=self._hovered, pressed=self._pressed, checked=self.isChecked(), enabled=self.isEnabled())
-        painter.setPen(QPen(QColor(255,255,255,245) if self.isChecked() else QColor(62,50,66,240)))
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
-        painter.end()
-
-
-class SegmentedTabButton(TexturedButton):
-    def __init__(self, text: str, parent: QWidget | None = None):
-        super().__init__(text, role="soft", radius=18, parent=parent)
-        self.setCheckable(True)
-        self.setMinimumHeight(42)
-        self.setMinimumWidth(170)
-        self.setFont(QFont(self.font().family(), self.font().pointSize(), QFont.Weight.Bold))
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        draw_glass_button(painter, self.rect(), radius=self.radius, role="primary" if self.isChecked() else "soft", hovered=self._hovered, pressed=self._pressed, checked=self.isChecked(), enabled=self.isEnabled())
-        painter.setPen(QPen(QColor(255,255,255,248) if self.isChecked() else QColor(58,46,62,244)))
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
-        painter.end()
-
-
-class TitleBar(QWidget):
-    def __init__(self, window: "SubtitleGUI"):
-        super().__init__(window)
-        self.window_ref = window
-        self.drag_offset = None
-        self.setFixedHeight(64)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(18, 10, 18, 10)
-        layout.setSpacing(10)
-
-        self.menu_btn = QToolButton(self)
-        self.menu_btn.setText("☰")
-        self.menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.menu_btn.setAutoRaise(True)
-        self.menu_btn.clicked.connect(window.toggle_sidebar)
-        layout.addWidget(self.menu_btn)
-
-        text_col = QVBoxLayout()
-        text_col.setSpacing(0)
-        self.title_label = QLabel(APP_NAME)
-        self.title_label.setObjectName("WindowTitle")
-        self.subtitle_label = QLabel(APP_TAGLINE)
-        self.subtitle_label.setObjectName("WindowSubtitle")
-        self.subtitle_label.setWordWrap(False)
-        text_col.addWidget(self.title_label)
-        text_col.addWidget(self.subtitle_label)
-        layout.addLayout(text_col)
-        layout.addStretch(1)
-
-        self.min_btn = self._make_ctrl("—", window.showMinimized)
-        self.max_btn = self._make_ctrl("▢", window.toggle_maximize_restore)
-        self.close_btn = self._make_ctrl("✕", window.close)
-        layout.addWidget(self.min_btn)
-        layout.addWidget(self.max_btn)
-        layout.addWidget(self.close_btn)
-
-    def _make_ctrl(self, text: str, slot):
-        btn = QToolButton(self)
-        btn.setText(text)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setAutoRaise(True)
-        btn.clicked.connect(slot)
-        btn.setStyleSheet(
-            """
-            QToolButton {
-                color: rgba(70,58,74,0.94);
-                background: rgba(255,255,255,0.06);
-                border: 1px solid rgba(255,255,255,0.34);
-                border-radius: 12px;
-                min-width: 36px;
-                min-height: 36px;
-            }
-            QToolButton:hover {
-                background: rgba(255,255,255,0.12);
-            }
-            """
-        )
-        return btn
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_offset = event.globalPosition().toPoint() - self.window_ref.frameGeometry().topLeft()
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self.drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton and not self.window_ref.isMaximized():
-            self.window_ref.move(event.globalPosition().toPoint() - self.drag_offset)
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self.drag_offset = None
-        super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.window_ref.toggle_maximize_restore()
-        super().mouseDoubleClickEvent(event)
-
-
-class ModelDownloadDialog(QDialog):
-    def __init__(self, info: dict, reason: str, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setWindowTitle("모델 다운로드 확인")
-        self.setModal(True)
-        self.setMinimumWidth(720)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 12, 12, 12)
-
-        card = FrostedPanel(radius=26)
-        outer.addWidget(card)
-
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(22, 22, 22, 22)
-        layout.setSpacing(14)
-
-        title = QLabel("선택 모델 다운로드")
-        title.setObjectName("DialogTitle")
-        layout.addWidget(title)
-
-        reason_label = QLabel(reason)
-        reason_label.setWordWrap(True)
-        reason_label.setObjectName("BodyText")
-        layout.addWidget(reason_label)
-
-        rows = [
-            ("모델", info.get("label", "알 수 없음")),
-            ("설명", info.get("long_note", "알 수 없음")),
-            ("원본", info.get("download_source", "알 수 없음")),
-            ("저장 위치", info.get("download_target_display") or compact_path_for_display(info.get("download_target", ""), 4)),
-            ("예상 크기", info.get("remote_size_text", "알 수 없음")),
-            ("100 Mb/s", info.get("eta_100", "알 수 없음")),
-            ("500 Mb/s", info.get("eta_500", "알 수 없음")),
-            ("1 Gb/s", info.get("eta_1000", "알 수 없음")),
-        ]
-
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
-        for row, (key, value) in enumerate(rows):
-            key_label = QLabel(key)
-            key_label.setObjectName("FormLabel")
-            value_label = QLabel(str(value))
-            value_label.setObjectName("BodyText")
-            value_label.setWordWrap(True)
-            grid.addWidget(key_label, row, 0, Qt.AlignmentFlag.AlignTop)
-            grid.addWidget(value_label, row, 1)
-        layout.addLayout(grid)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("다운로드 시작")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-
-class SubtitleGUI(QMainWindow):
-    def __init__(self):
-        self.qt_app = QApplication.instance() or QApplication(sys.argv)
-        self.qt_app.setStyle("Fusion")
+DEVICE_OPTIONS = [
+    ("auto", "자동 선택"),
+    ("cuda", "GPU 우선"),
+    ("cpu", "CPU 전용"),
+]
+
+AUDIO_ENHANCE_OPTIONS = [
+    ("off", "끔"),
+    ("standard", "표준 보정"),
+    ("strong", "강한 보정"),
+]
+
+
+@dataclass(frozen=True)
+class Palette:
+    bg: str = "#0B1020"
+    panel: str = "#111827"
+    panel_2: str = "#151E2F"
+    panel_3: str = "#1D293D"
+    line: str = "#2A3A52"
+    text: str = "#EAF0FA"
+    muted: str = "#96A3B8"
+    faint: str = "#6D7B90"
+    accent: str = "#7C5CFF"
+    accent_2: str = "#2DD4BF"
+    danger: str = "#FB7185"
+    warning: str = "#FBBF24"
+    success: str = "#34D399"
+    input_bg: str = "#0F172A"
+    hover: str = "#25324A"
+
+
+class SubtitleGUI(tk.Tk):
+    """Complete, self-contained Tkinter GUI for WhisperStudio."""
+
+    def __init__(self) -> None:
         super().__init__()
-
-        self.msg_queue = queue.Queue()
-        self.worker_thread = None
-        self.output_path = None
-        self.output_paths = {}
-        self.batch_results = []
-        self.input_files = []
+        self.palette = Palette()
         self.settings = load_settings()
-        self.status_details = {}
-        self.base_status_details = {}
-        self.live_resource_data = {}
-        self.resource_refresh_blocked = False
-        self.last_measured_speed_mbps = None
-        self.last_measured_repo_id = ""
-        self.cancel_event = None
-        self.current_task_kind = ""
-        self.current_task_label = ""
-        self.current_progress_percent = 0.0
-        self.job_started_at = None
-        self.transfer_mode = ""
-        self.sidebar_expanded = True
-        self._backdrop_applied = False
+        self.files: list[str] = []
+        self.last_saved_paths: list[str] = []
+        self.event_queue: queue.Queue[Callable[[], None]] = queue.Queue()
+        self.cancel_event = threading.Event()
+        self.worker_thread: threading.Thread | None = None
+        self.busy = False
+        self.start_time: float | None = None
 
-        self.setWindowTitle(APP_NAME)
-        self.resize(1440, 940)
-        self.setMinimumSize(1180, 820)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self._build_lookup_tables()
+        self._configure_window()
+        self._configure_styles()
+        self._create_variables()
+        self._build_layout()
+        self._bind_events()
+        self._refresh_file_list()
+        self._refresh_selection_summary()
+        self._set_status("대기 중", "파일을 추가한 뒤 시작하십시오.", "neutral")
+        self._set_progress(0.0)
+        self._log("WhisperStudio UI 초기화 완료")
+
+        self.after(80, self._process_ui_events)
+        self.after(250, self._run_startup_probe)
+        self.after(2500, self._refresh_live_resources_loop)
+
+    # ------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------
+    def _build_lookup_tables(self) -> None:
+        self.language_display_to_code = {
+            f"{label} · {code}": code for code, label in LANGUAGE_OPTIONS
+        }
+        self.language_code_to_display = {
+            code: f"{label} · {code}" for code, label in LANGUAGE_OPTIONS
+        }
+
+        self.model_display_to_id = {entry["display"]: entry["id"] for entry in MODEL_CATALOG}
+        self.model_id_to_display = {entry["id"]: entry["display"] for entry in MODEL_CATALOG}
+
+        self.preset_display_to_id = {
+            preset["display"]: preset["id"] for preset in TRANSCRIPTION_PRESETS
+        }
+        self.preset_id_to_display = {
+            preset["id"]: preset["display"] for preset in TRANSCRIPTION_PRESETS
+        }
+
+        self.device_display_to_id = {display: code for code, display in DEVICE_OPTIONS}
+        self.device_id_to_display = {code: display for code, display in DEVICE_OPTIONS}
+
+        self.audio_display_to_id = {display: code for code, display in AUDIO_ENHANCE_OPTIONS}
+        self.audio_id_to_display = {code: display for code, display in AUDIO_ENHANCE_OPTIONS}
+
+    def _configure_window(self) -> None:
+        self.title(f"{APP_NAME} {APP_VERSION}")
+        self.geometry("1320x820")
+        self.minsize(1120, 700)
+        self.configure(bg=self.palette.bg)
 
         icon_path = bundled_icon_path()
-        if icon_path and os.path.isfile(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
-
-        self._init_fonts()
-        self._build_ui()
-        self._apply_styles()
-        self._load_settings_into_ui()
-        self._refresh_selection_hints()
-        self._refresh_model_state_local()
-
-        self.queue_timer = QTimer(self)
-        self.queue_timer.timeout.connect(self._poll_queue)
-        self.queue_timer.start(100)
-
-        self.job_clock_timer = QTimer(self)
-        self.job_clock_timer.timeout.connect(self._refresh_job_clock)
-        self.job_clock_timer.setInterval(1000)
-
-        self.resource_timer = QTimer(self)
-        self.resource_timer.timeout.connect(self.refresh_live_resource_now)
-        self.resource_timer.start(5000)
-
-        QTimer.singleShot(150, self.start_system_check)
-        QTimer.singleShot(300, self.refresh_live_resource_now)
-
-    # -------------------------------------------------
-    # Qt boot / shell
-    # -------------------------------------------------
-    def mainloop(self):
-        self.show()
-        return self.qt_app.exec()
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        apply_windows_backdrop(self)
-        self._backdrop_applied = True
-
-    def nativeEvent(self, eventType, message):
-        if os.name == "nt":
+        if icon_path:
             try:
-                msg = ctypes.wintypes.MSG.from_address(int(message))
-                if msg.message in {WM_DWMCOMPOSITIONCHANGED, WM_THEMECHANGED, WM_SETTINGCHANGE}:
-                    QTimer.singleShot(0, lambda: apply_windows_backdrop(self))
+                self.iconbitmap(icon_path)
             except Exception:
                 pass
-        return super().nativeEvent(eventType, message)
 
-    def closeEvent(self, event):
         try:
-            if self.cancel_event is not None:
-                self.cancel_event.set()
+            self.tk.call("tk", "scaling", 1.12)
         except Exception:
             pass
-        super().closeEvent(event)
 
-    def toggle_maximize_restore(self):
-        if self.isMaximized():
-            self.showNormal()
-        else:
-            self.showMaximized()
+    def _configure_styles(self) -> None:
+        p = self.palette
+        self.style = ttk.Style(self)
+        try:
+            self.style.theme_use("clam")
+        except tk.TclError:
+            pass
 
-    def _init_fonts(self):
-        db = QFontDatabase()
-        families = set(db.families())
+        base_font = ("Segoe UI", 10)
+        title_font = ("Segoe UI Semibold", 15)
+        small_font = ("Segoe UI", 9)
+        button_font = ("Segoe UI Semibold", 10)
 
-        def pick(candidates: list[str], fallback: str | None = None) -> str:
-            for name in candidates:
-                if name in families:
-                    return name
-            return fallback or self.qt_app.font().family() or "Segoe UI"
+        self.option_add("*Font", base_font)
+        self.option_add("*tearOff", False)
 
-        self.ui_font_family = pick([
-            "Pretendard",
-            "Pretendard Variable",
-            "Noto Sans KR",
-            "Noto Sans CJK KR",
-            "Source Han Sans KR",
-            "Malgun Gothic",
-            "Segoe UI",
-        ])
-        self.code_font_family = pick([
-            "JetBrains Mono",
-            "Cascadia Code",
-            "D2Coding",
-            "Consolas",
-        ], fallback=self.ui_font_family)
-        self.qt_app.setFont(QFont(self.ui_font_family, 10))
+        self.style.configure("TFrame", background=p.bg)
+        self.style.configure("Panel.TFrame", background=p.panel, borderwidth=0)
+        self.style.configure("Card.TFrame", background=p.panel_2, borderwidth=0)
+        self.style.configure("Header.TFrame", background=p.bg)
 
-    def _apply_styles(self):
-        self.setStyleSheet(
-            f"""
-            QWidget {{
-                color: rgba(46,38,49,0.96);
-                font-family: '{self.ui_font_family}';
-                background: transparent;
-            }}
-            QLabel#WindowTitle {{
-                font-size: 18px;
-                font-weight: 700;
-            }}
-            QLabel#WindowSubtitle {{
-                color: rgba(104,92,110,0.84);
-                font-size: 11px;
-            }}
-            QLabel#PageTitle, QLabel#DialogTitle {{
-                font-size: 22px;
-                font-weight: 700;
-            }}
-            QLabel#SectionTitle {{
-                font-size: 16px;
-                font-weight: 700;
-            }}
-            QLabel#SectionSub, QLabel#BodyText {{
-                color: rgba(96,86,102,0.92);
-                font-size: 12px;
-                background: transparent;
-            }}
-            QLabel#MutedText {{
-                color: rgba(122,112,128,0.88);
-                font-size: 11px;
-                background: transparent;
-            }}
-            QLabel#FormLabel {{
-                color: rgba(78,66,84,0.94);
-                font-size: 12px;
-                font-weight: 600;
-                background: transparent;
-            }}
-            QLabel#HeroValue {{
-                font-size: 18px;
-                font-weight: 700;
-            }}
-            QLabel#StatusHeadline {{
-                font-size: 20px;
-                font-weight: 700;
-            }}
-            QComboBox {{
-                background: rgba(255,255,255,0.06);
-                border: 1px solid rgba(255,255,255,0.42);
-                border-radius: 14px;
-                padding: 10px 12px;
-                min-height: 22px;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 26px;
-                background: transparent;
-            }}
-            QComboBox QAbstractItemView {{
-                background: rgba(250,247,250,0.96);
-                border: 1px solid rgba(255,255,255,0.70);
-                selection-background-color: rgba(244,153,124,0.24);
-                color: rgba(46,38,49,0.96);
-                padding: 6px;
-            }}
-            QListWidget, QPlainTextEdit {{
-                background: rgba(255,255,255,0.08);
-                border: 1px solid rgba(255,255,255,0.40);
-                border-radius: 18px;
-                padding: 10px;
-                selection-background-color: rgba(244,153,124,0.18);
-            }}
-            QListWidget::item {{
-                padding: 8px 10px;
-                border-radius: 10px;
-                margin: 2px 0px;
-                background: transparent;
-            }}
-            QListWidget::item:selected {{
-                background: rgba(244,153,124,0.18);
-            }}
-            QCheckBox {{
-                spacing: 10px;
-                color: rgba(46,38,49,0.96);
-                background: transparent;
-            }}
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-                border-radius: 6px;
-                border: 1px solid rgba(255,255,255,0.64);
-                background: rgba(255,255,255,0.12);
-            }}
-            QCheckBox::indicator:checked {{
-                background: rgba(244,153,124,0.78);
-            }}
-            QProgressBar {{
-                background: rgba(255,255,255,0.06);
-                border: 1px solid rgba(255,255,255,0.34);
-                border-radius: 11px;
-                min-height: 18px;
-                text-align: center;
-                color: rgba(72,58,76,0.96);
-                font-weight: 700;
-            }}
-            QProgressBar::chunk {{
-                border-radius: 10px;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 rgba(244,153,124,0.88),
-                    stop:0.5 rgba(233,133,173,0.82),
-                    stop:1 rgba(111,196,255,0.78));
-            }}
-            QPushButton#PrimaryButton,
-            QPushButton#SoftButton,
-            QPushButton#DangerButton {{
-                background: transparent;
-                border: none;
-                padding: 0px;
-            }}
-            QScrollArea {{
-                background: transparent;
-                border: none;
-            }}
-            QScrollArea > QWidget > QWidget {{
-                background: transparent;
-            }}
-            QScrollBar:vertical {{
-                background: transparent;
-                width: 12px;
-                margin: 2px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: rgba(172,160,179,0.55);
-                border-radius: 6px;
-                min-height: 24px;
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-                background: transparent;
-                border: none;
-                height: 0px;
-            }}
-            """
+        self.style.configure("TLabel", background=p.bg, foreground=p.text, font=base_font)
+        self.style.configure("Muted.TLabel", background=p.bg, foreground=p.muted, font=small_font)
+        self.style.configure("Panel.TLabel", background=p.panel, foreground=p.text, font=base_font)
+        self.style.configure("PanelMuted.TLabel", background=p.panel, foreground=p.muted, font=small_font)
+        self.style.configure("Card.TLabel", background=p.panel_2, foreground=p.text, font=base_font)
+        self.style.configure("CardMuted.TLabel", background=p.panel_2, foreground=p.muted, font=small_font)
+        self.style.configure("Title.TLabel", background=p.bg, foreground=p.text, font=title_font)
+        self.style.configure("Section.TLabel", background=p.panel, foreground=p.text, font=("Segoe UI Semibold", 11))
+        self.style.configure("CardTitle.TLabel", background=p.panel_2, foreground=p.text, font=("Segoe UI Semibold", 10))
+
+        self.style.configure(
+            "Primary.TButton",
+            background=p.accent,
+            foreground="#FFFFFF",
+            borderwidth=0,
+            focusthickness=0,
+            focuscolor=p.accent,
+            padding=(16, 10),
+            font=button_font,
+        )
+        self.style.map(
+            "Primary.TButton",
+            background=[("disabled", p.panel_3), ("active", "#6D4BFF")],
+            foreground=[("disabled", p.faint)],
         )
 
-    def _build_ui(self):
-        surface = BackdropSurface()
-        self.setCentralWidget(surface)
-
-        root = QVBoxLayout(surface)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
-
-        self.title_bar = TitleBar(self)
-        self.title_bar.menu_btn.hide()
-        root.addWidget(self.title_bar)
-
-        tab_shell = FrostedPanel(radius=24)
-        tab_shell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        tab_layout = QHBoxLayout(tab_shell)
-        tab_layout.setContentsMargins(18, 14, 18, 14)
-        tab_layout.setSpacing(10)
-        tab_layout.addStretch(1)
-        self.nav_buttons = []
-        for text_label, index in [("설정", 0), ("실행", 1)]:
-            btn = SegmentedTabButton(text_label)
-            btn.clicked.connect(lambda checked=False, idx=index: self._switch_page(idx))
-            tab_layout.addWidget(btn)
-            self.nav_buttons.append(btn)
-        tab_layout.addStretch(1)
-        build_label = QLabel(f"v{APP_VERSION}")
-        build_label.setObjectName("MutedText")
-        tab_layout.addWidget(build_label, 0, Qt.AlignmentFlag.AlignRight)
-        root.addWidget(tab_shell)
-
-        self.stack = QStackedWidget()
-        root.addWidget(self.stack, 1)
-
-        self.stack.addWidget(self._build_settings_page())
-        self.stack.addWidget(self._build_activity_page())
-
-        self.footer_panel = QWidget()
-        self.footer_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        root.addWidget(self.footer_panel)
-        self._build_footer(self.footer_panel)
-
-        self._switch_page(0)
-
-    def _page_shell(self, title: str, subtitle: str) -> tuple[QWidget, QVBoxLayout]:
-        body = QWidget()
-        body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(12)
-
-        head = QWidget()
-        head_layout = QVBoxLayout(head)
-        head_layout.setContentsMargins(22, 20, 22, 20)
-        head_layout.setSpacing(4)
-        title_label = QLabel(title)
-        title_label.setObjectName("PageTitle")
-        subtitle_label = QLabel(subtitle)
-        subtitle_label.setObjectName("SectionSub")
-        subtitle_label.setWordWrap(True)
-        head_layout.addWidget(title_label)
-        head_layout.addWidget(subtitle_label)
-        body_layout.addWidget(head)
-
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(12)
-        body_layout.addWidget(content, 1)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(body)
-        return scroll, content_layout
-
-    def _build_home_page(self):
-        return self._build_activity_page()
-
-    def _build_settings_page(self):
-        page, layout = self._page_shell(
-            "전사 설정",
-            "전사에 대한 다양한 설정을 제공합니다. 전사 언어, 프리셋, 음성 보정, 출력 형식 등을 조정할 수 있습니다. 추가적인 세부 설정은 버튼을 눌러서 확인하십시오.",
+        self.style.configure(
+            "Ghost.TButton",
+            background=p.panel_3,
+            foreground=p.text,
+            borderwidth=0,
+            padding=(14, 9),
+            font=button_font,
+        )
+        self.style.map(
+            "Ghost.TButton",
+            background=[("disabled", p.panel_2), ("active", p.hover)],
+            foreground=[("disabled", p.faint)],
         )
 
-        top_grid = QGridLayout()
-        top_grid.setHorizontalSpacing(12)
-        top_grid.setVerticalSpacing(12)
-        layout.addLayout(top_grid)
-
-        input_card = QWidget()
-        input_layout = QVBoxLayout(input_card)
-        input_layout.setContentsMargins(22, 20, 22, 20)
-        input_layout.setSpacing(12)
-        self._section_header(input_layout, "입력 파일", "한 개 또는 여러 개의 오디오/비디오 파일을 선택할 수 있습니다. 결과는 각 원본 파일과 같은 폴더에 저장됩니다.")
-
-        file_btn_row = QHBoxLayout()
-        self.pick_file_btn = self._make_button("파일 선택", self.browse_input_files, primary=True)
-        self.add_file_btn = self._make_button("여러 파일 추가", self.add_more_input_files)
-        self.remove_file_btn = self._make_button("선택 제거", self.remove_selected_input_files)
-        self.clear_file_btn = self._make_button("목록 지우기", self.clear_input_files, danger=True)
-        for widget in [self.pick_file_btn, self.add_file_btn, self.remove_file_btn, self.clear_file_btn]:
-            file_btn_row.addWidget(widget)
-        file_btn_row.addStretch(1)
-        input_layout.addLayout(file_btn_row)
-
-        self.file_summary_label = QLabel("선택된 파일이 없습니다.")
-        self.file_summary_label.setObjectName("BodyText")
-        self.file_summary_label.setWordWrap(True)
-        input_layout.addWidget(self.file_summary_label)
-
-        self.file_list = QListWidget()
-        self.file_list.setMinimumHeight(220)
-        self.file_list.itemDoubleClicked.connect(lambda _item: self.remove_selected_input_files())
-        input_layout.addWidget(self.file_list)
-
-        top_grid.addWidget(input_card, 0, 0, 1, 2)
-
-        basic_card = QWidget()
-        basic_layout = QVBoxLayout(basic_card)
-        basic_layout.setContentsMargins(22, 20, 22, 20)
-        basic_layout.setSpacing(12)
-        self._section_header(basic_layout, "전사 설정", "전사 언어, 프리셋, 모델을 선택합니다.")
-
-        self.language_combo = QComboBox()
-        for code, name in LANGUAGE_OPTIONS:
-            self.language_combo.addItem(f"{name} · {code}", code)
-        self.language_combo.currentIndexChanged.connect(self._refresh_selection_hints)
-        self._form_row(basic_layout, "언어", self.language_combo)
-
-        self.model_combo = QComboBox()
-        for entry in MODEL_CATALOG:
-            self.model_combo.addItem(f"{entry['label']} · {entry['short_note']}", entry["id"])
-        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-        self._form_row(basic_layout, "모델", self.model_combo)
-
-        self.preset_combo = QComboBox()
-        for preset in TRANSCRIPTION_PRESETS:
-            self.preset_combo.addItem(f"{preset['label']} · {preset['short_note']}", preset["id"])
-        self.preset_combo.currentIndexChanged.connect(self._refresh_selection_hints)
-        self._form_row(basic_layout, "프리셋", self.preset_combo)
-
-        rec_box = FrostedPanel(radius=18)
-        rec_inner = QVBoxLayout(rec_box)
-        rec_inner.setContentsMargins(16, 14, 16, 14)
-        rec_inner.setSpacing(8)
-        title = QLabel("자동 권장 설정")
-        title.setObjectName("FormLabel")
-        self.recommendation_summary_label = QLabel("파일을 선택하면 권장 설정을 제안합니다.")
-        self.recommendation_summary_label.setObjectName("BodyText")
-        self.recommendation_summary_label.setWordWrap(True)
-        self.recommendation_meta_label = QLabel("")
-        self.recommendation_meta_label.setObjectName("MutedText")
-        self.recommendation_meta_label.setWordWrap(True)
-        rec_btn_row = QHBoxLayout()
-        self.apply_rec_btn = self._make_button("권장값 적용", self.apply_recommendations)
-        rec_btn_row.addWidget(self.apply_rec_btn)
-        rec_btn_row.addStretch(1)
-        rec_inner.addWidget(title)
-        rec_inner.addWidget(self.recommendation_summary_label)
-        rec_inner.addWidget(self.recommendation_meta_label)
-        rec_inner.addLayout(rec_btn_row)
-        basic_layout.addWidget(rec_box)
-        top_grid.addWidget(basic_card, 1, 0)
-
-        device_card = QWidget()
-        device_layout = QVBoxLayout(device_card)
-        device_layout.setContentsMargins(22, 20, 22, 20)
-        device_layout.setSpacing(12)
-        self._section_header(device_layout, "장치 선호", "GPU와 CPU 중 사용 가능한 환경을 자동으로 선택하거나 고정할 수 있습니다.")
-        self.device_note_label = QLabel("")
-        self.device_note_label.setObjectName("BodyText")
-        self.device_note_label.setWordWrap(True)
-        device_layout.addWidget(self.device_note_label)
-        chip_row = QHBoxLayout()
-        self.device_buttons = {}
-        for text_label, value in [("자동", "auto"), ("GPU", "cuda"), ("CPU", "cpu")]:
-            btn = ChipButton(text_label)
-            btn.clicked.connect(lambda checked=False, v=value: self._set_preferred_device(v))
-            self.device_buttons[value] = btn
-            chip_row.addWidget(btn)
-        chip_row.addStretch(1)
-        device_layout.addLayout(chip_row)
-
-        device_action_row = QHBoxLayout()
-        self.system_check_btn = self._make_button("시스템 점검", self.start_system_check)
-        self.save_settings_btn = self._make_button("설정 저장", self.save_ui_settings, primary=True)
-        device_action_row.addWidget(self.system_check_btn)
-        device_action_row.addWidget(self.save_settings_btn)
-        device_action_row.addStretch(1)
-        device_layout.addLayout(device_action_row)
-        top_grid.addWidget(device_card, 1, 1)
-
-        audio_card = QWidget()
-        audio_layout = QVBoxLayout(audio_card)
-        audio_layout.setContentsMargins(22, 20, 22, 20)
-        audio_layout.setSpacing(12)
-        self._section_header(audio_layout, "음성 보정", "보정은 전처리 단계에서만 적용됩니다. 표준은 일반 음성, 강함은 소음이 큰 녹음에 권장합니다.")
-        audio_chip_row = QHBoxLayout()
-        self.audio_buttons = {}
-        for text_label, value in [("끔", "off"), ("표준", "standard"), ("강함", "strong")]:
-            btn = ChipButton(text_label)
-            btn.clicked.connect(lambda checked=False, v=value: self._set_audio_enhance_level(v))
-            self.audio_buttons[value] = btn
-            audio_chip_row.addWidget(btn)
-        audio_chip_row.addStretch(1)
-        audio_layout.addLayout(audio_chip_row)
-        top_grid.addWidget(audio_card, 2, 0)
-
-        output_card = QWidget()
-        output_layout = QVBoxLayout(output_card)
-        output_layout.setContentsMargins(22, 20, 22, 20)
-        output_layout.setSpacing(12)
-        self._section_header(output_layout, "출력 형식", "SRT는 기본 자막, TXT는 문장 모음, VTT는 웹/영상 플레이어 연동에 적합합니다.")
-        output_box = QWidget()
-        output_row = QHBoxLayout(output_box)
-        output_row.setContentsMargins(0, 0, 0, 0)
-        output_row.setSpacing(18)
-        self.output_fmt_srt = QCheckBox("SRT")
-        self.output_fmt_txt = QCheckBox("TXT")
-        self.output_fmt_vtt = QCheckBox("VTT")
-        for cb in [self.output_fmt_srt, self.output_fmt_txt, self.output_fmt_vtt]:
-            cb.stateChanged.connect(self._refresh_selection_hints)
-            output_row.addWidget(cb)
-        output_row.addStretch(1)
-        output_layout.addWidget(output_box)
-        top_grid.addWidget(output_card, 2, 1)
-
-        return page
-
-    def _build_activity_page(self):
-        page, layout = self._page_shell(
-            "진행 상태",
-            "현재 단계, 진행률, 작업 로그, 장치 및 자원 상태를 확인할 수 있습니다.",
+        self.style.configure(
+            "Danger.TButton",
+            background=p.danger,
+            foreground="#FFFFFF",
+            borderwidth=0,
+            padding=(14, 9),
+            font=button_font,
+        )
+        self.style.map(
+            "Danger.TButton",
+            background=[("disabled", p.panel_3), ("active", "#E85D72")],
+            foreground=[("disabled", p.faint)],
         )
 
-        top_grid = QGridLayout()
-        top_grid.setHorizontalSpacing(12)
-        top_grid.setVerticalSpacing(12)
-        layout.addLayout(top_grid)
-
-        start_card = QWidget()
-        start_layout = QVBoxLayout(start_card)
-        start_layout.setContentsMargins(22, 20, 22, 20)
-        start_layout.setSpacing(10)
-        self._section_header(start_layout, "전사 시작", "입력 파일과 설정을 확인한 뒤 전사를 시작합니다.")
-        self.launch_status_label = QLabel("준비됨")
-        self.launch_status_label.setObjectName("StatusHeadline")
-        self.launch_status_label.setWordWrap(True)
-        self.launch_meta_label = QLabel("전사할 파일과 실행 설정을 확인하십시오.")
-        self.launch_meta_label.setObjectName("BodyText")
-        self.launch_meta_label.setWordWrap(True)
-        start_layout.addWidget(self.launch_status_label)
-        start_layout.addWidget(self.launch_meta_label)
-        start_btn_row = QHBoxLayout()
-        self.home_start_btn = self._make_button("전사 시작", self.start_transcription, primary=True)
-        self.home_activity_btn = self._make_button("설정 보기", lambda: self._switch_page(0))
-        self.execution_save_btn = self._make_button("설정 저장", self.save_ui_settings)
-        start_btn_row.addWidget(self.home_start_btn)
-        start_btn_row.addWidget(self.home_activity_btn)
-        start_btn_row.addWidget(self.execution_save_btn)
-        start_btn_row.addStretch(1)
-        start_layout.addLayout(start_btn_row)
-        top_grid.addWidget(start_card, 0, 0)
-
-        quick_card = QWidget()
-        quick_layout = QVBoxLayout(quick_card)
-        quick_layout.setContentsMargins(22, 20, 22, 20)
-        quick_layout.setSpacing(10)
-        self._section_header(quick_layout, "현재 구성", "가장 중요한 실행 설정만 요약합니다.")
-        self.quick_lang_value = self._metric_row(quick_layout, "언어")
-        self.quick_model_value = self._metric_row(quick_layout, "모델")
-        self.quick_preset_value = self._metric_row(quick_layout, "프리셋")
-        self.quick_device_value = self._metric_row(quick_layout, "장치")
-        self.quick_audio_value = self._metric_row(quick_layout, "음성 보정")
-        self.quick_output_value = self._metric_row(quick_layout, "출력 형식")
-        quick_btn_row = QHBoxLayout()
-        self.execution_settings_btn = self._make_button("설정 열기", lambda: self._switch_page(0))
-        self.execution_check_btn = self._make_button("시스템 점검", self.start_system_check)
-        quick_btn_row.addWidget(self.execution_settings_btn)
-        quick_btn_row.addWidget(self.execution_check_btn)
-        quick_btn_row.addStretch(1)
-        quick_layout.addLayout(quick_btn_row)
-        top_grid.addWidget(quick_card, 0, 1)
-
-        mid_grid = QGridLayout()
-        mid_grid.setHorizontalSpacing(12)
-        mid_grid.setVerticalSpacing(12)
-        layout.addLayout(mid_grid)
-
-        model_card = QWidget()
-        model_layout = QVBoxLayout(model_card)
-        model_layout.setContentsMargins(22, 20, 22, 20)
-        model_layout.setSpacing(10)
-        self._section_header(model_layout, "선택 모델 상태", "캐시 존재 여부와 현재 준비 상태를 즉시 확인합니다.")
-        badge_row = QHBoxLayout()
-        self.model_state_badge = QLabel("확인 중")
-        badge_row.addWidget(self.model_state_badge)
-        badge_row.addStretch(1)
-        model_layout.addLayout(badge_row)
-        self.model_status_summary_label = QLabel("선택 모델의 상태를 확인하는 중입니다.")
-        self.model_status_summary_label.setObjectName("BodyText")
-        self.model_status_summary_label.setWordWrap(True)
-        self.model_cache_path_label = QLabel("캐시 경로를 확인하는 중입니다.")
-        self.model_cache_path_label.setObjectName("MutedText")
-        self.model_cache_path_label.setWordWrap(True)
-        model_layout.addWidget(self.model_status_summary_label)
-        model_layout.addWidget(self.model_cache_path_label)
-        model_btn_row = QHBoxLayout()
-        self.download_model_btn = self._make_button("모델 다운로드", self.start_model_download)
-        self.refresh_model_btn = self._make_button("상태 새로고침", self._refresh_model_state_local)
-        model_btn_row.addWidget(self.download_model_btn)
-        model_btn_row.addWidget(self.refresh_model_btn)
-        model_btn_row.addStretch(1)
-        model_layout.addLayout(model_btn_row)
-        mid_grid.addWidget(model_card, 0, 0)
-
-        progress_card = QWidget()
-        progress_layout = QVBoxLayout(progress_card)
-        progress_layout.setContentsMargins(22, 20, 22, 20)
-        progress_layout.setSpacing(10)
-        self._section_header(progress_layout, "진행 상태", "현재 단계, 진행률, 경과 시간, 전처리 상태를 확인합니다.")
-        self.activity_status_label = QLabel("준비됨")
-        self.activity_status_label.setObjectName("StatusHeadline")
-        self.activity_status_meta_label = QLabel("대기 중")
-        self.activity_status_meta_label.setObjectName("BodyText")
-        self.activity_status_meta_label.setWordWrap(True)
-        self.activity_job_meta_label = QLabel("")
-        self.activity_job_meta_label.setObjectName("MutedText")
-        self.activity_job_meta_label.setWordWrap(True)
-        self.activity_preprocess_label = QLabel("")
-        self.activity_preprocess_label.setObjectName("MutedText")
-        self.activity_preprocess_label.setWordWrap(True)
-        self.activity_progress = QProgressBar()
-        self.activity_progress.setRange(0, 100)
-        self.activity_progress.setValue(0)
-        progress_layout.addWidget(self.activity_status_label)
-        progress_layout.addWidget(self.activity_status_meta_label)
-        progress_layout.addWidget(self.activity_job_meta_label)
-        progress_layout.addWidget(self.activity_preprocess_label)
-        progress_layout.addWidget(self.activity_progress)
-        mid_grid.addWidget(progress_card, 0, 1)
-
-        lower_grid = QGridLayout()
-        lower_grid.setHorizontalSpacing(12)
-        lower_grid.setVerticalSpacing(12)
-        layout.addLayout(lower_grid)
-
-        resource_card = QWidget()
-        resource_layout = QVBoxLayout(resource_card)
-        resource_layout.setContentsMargins(22, 20, 22, 20)
-        resource_layout.setSpacing(10)
-        self._section_header(resource_layout, "작업 중 자원 상태", "앱/시스템 부하와 VRAM 사용량을 함께 보여줍니다.")
-        badge_row = QHBoxLayout()
-        self.resource_badge_label = QLabel("점검 중")
-        badge_row.addWidget(self.resource_badge_label)
-        badge_row.addStretch(1)
-        badge_row.addWidget(self._make_button("새로고침", self.refresh_live_resource_now))
-        resource_layout.addLayout(badge_row)
-        self.resource_summary_label = QLabel("실시간 자원 상태를 불러오는 중입니다.")
-        self.resource_summary_label.setObjectName("BodyText")
-        self.resource_summary_label.setWordWrap(True)
-        self.resource_meta_label = QLabel("마지막 갱신 --:--:--")
-        self.resource_meta_label.setObjectName("MutedText")
-        self.resource_meta_label.setWordWrap(True)
-        resource_layout.addWidget(self.resource_summary_label)
-        resource_layout.addWidget(self.resource_meta_label)
-        lower_grid.addWidget(resource_card, 0, 0)
-
-        status_card = QWidget()
-        status_layout = QVBoxLayout(status_card)
-        status_layout.setContentsMargins(22, 20, 22, 20)
-        status_layout.setSpacing(12)
-        self._section_header(status_layout, "상태 요약", "모델, 엔진, 장치, 런타임 상태를 확인합니다.")
-        status_grid = QGridLayout()
-        status_grid.setHorizontalSpacing(12)
-        status_grid.setVerticalSpacing(12)
-        self.status_tiles = {}
-        rows = [("model", "모델"), ("engine", "엔진"), ("torch", "PyTorch"), ("device", "장치"), ("runtime", "런타임")]
-        for idx, (key, label_text) in enumerate(rows):
-            tile = FrostedPanel(radius=22)
-            tile_layout = QVBoxLayout(tile)
-            tile_layout.setContentsMargins(16, 14, 16, 14)
-            tile_layout.setSpacing(6)
-            title = QLabel(label_text)
-            title.setObjectName("FormLabel")
-            badge = QLabel("확인 중")
-            summary = QLabel("상태를 확인하는 중입니다.")
-            summary.setObjectName("BodyText")
-            summary.setWordWrap(True)
-            meta = QLabel("")
-            meta.setObjectName("MutedText")
-            meta.setWordWrap(True)
-            tile_layout.addWidget(title)
-            tile_layout.addWidget(badge)
-            tile_layout.addWidget(summary)
-            tile_layout.addWidget(meta)
-            status_grid.addWidget(tile, idx // 2, idx % 2)
-            self.status_tiles[key] = {"badge": badge, "summary": summary, "meta": meta}
-        status_layout.addLayout(status_grid)
-        lower_grid.addWidget(status_card, 0, 1)
-
-        log_card = QWidget()
-        log_layout = QVBoxLayout(log_card)
-        log_layout.setContentsMargins(22, 20, 22, 20)
-        log_layout.setSpacing(12)
-        self._section_header(log_layout, "작업 로그", "현재 단계, 진행률, 작업 로그, 다운로드 속도와 남은 시간, 장치 및 자원 상태를 함께 확인할 수 있습니다.")
-        self.log_text = QPlainTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setMinimumHeight(320)
-        self.log_text.setFont(QFont(self.code_font_family, 10))
-        log_layout.addWidget(self.log_text)
-        layout.addWidget(log_card)
-
-        return page
-
-    def _build_footer(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(10)
-
-        top = QHBoxLayout()
-        top.setSpacing(10)
-        layout.addLayout(top)
-
-        self.start_btn = self._make_button("전사 시작", self.start_transcription, primary=True)
-        self.cancel_btn = self._make_button("취소", self._cancel_current_task, danger=True)
-        self.cancel_btn.setEnabled(False)
-        self.open_result_btn = self._make_button("결과 열기", self.open_result)
-        self.open_folder_btn = self._make_button("폴더 열기", self.open_result_folder)
-        self.open_result_btn.setEnabled(False)
-        self.open_folder_btn.setEnabled(False)
-        for btn in [self.start_btn, self.cancel_btn, self.open_result_btn, self.open_folder_btn]:
-            top.addWidget(btn)
-
-        top.addSpacing(8)
-        self.footer_status_label = QLabel("준비됨")
-        self.footer_status_label.setObjectName("BodyText")
-        top.addWidget(self.footer_status_label, 1)
-        top.addSpacing(8)
-        self.size_grip = QSizeGrip(parent)
-        top.addWidget(self.size_grip, 0, Qt.AlignmentFlag.AlignBottom)
-
-        meta_row = QHBoxLayout()
-        meta_row.setSpacing(10)
-        self.footer_transfer_label = QLabel("")
-        self.footer_transfer_label.setObjectName("BodyText")
-        self.footer_transfer_label.setWordWrap(True)
-        self.footer_meta_label = QLabel("")
-        self.footer_meta_label.setObjectName("MutedText")
-        self.footer_meta_label.setWordWrap(True)
-        meta_row.addWidget(self.footer_transfer_label, 1)
-        meta_row.addWidget(self.footer_meta_label, 1)
-        layout.addLayout(meta_row)
-
-        self.footer_progress = QProgressBar()
-        self.footer_progress.setRange(0, 100)
-        self.footer_progress.setValue(0)
-        layout.addWidget(self.footer_progress)
-
-    # -------------------------------------------------
-    # Small builders
-    # -------------------------------------------------
-    def _make_button(self, text: str, slot, primary: bool = False, danger: bool = False) -> QPushButton:
-        role = "primary" if primary else ("danger" if danger else "soft")
-        btn = TexturedButton(text, role=role, radius=16)
-        btn.clicked.connect(slot)
-        btn.setFont(QFont(self.ui_font_family, 10, QFont.Weight.DemiBold))
-        if primary:
-            btn.setObjectName("PrimaryButton")
-        elif danger:
-            btn.setObjectName("DangerButton")
-        else:
-            btn.setObjectName("SoftButton")
-        return btn
-
-    def _section_header(self, layout: QVBoxLayout, title: str, subtitle: str):
-        title_label = QLabel(title)
-        title_label.setObjectName("SectionTitle")
-        subtitle_label = QLabel(subtitle)
-        subtitle_label.setObjectName("SectionSub")
-        subtitle_label.setWordWrap(True)
-        layout.addWidget(title_label)
-        layout.addWidget(subtitle_label)
-
-    def _metric_row(self, layout: QVBoxLayout, label: str) -> QLabel:
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        left = QLabel(label)
-        left.setObjectName("FormLabel")
-        value = QLabel("-")
-        value.setObjectName("HeroValue")
-        value.setWordWrap(True)
-        row.addWidget(left)
-        row.addWidget(value, 1)
-        layout.addLayout(row)
-        return value
-
-    def _form_row(self, layout: QVBoxLayout, label: str, widget: QWidget):
-        label_widget = QLabel(label)
-        label_widget.setObjectName("FormLabel")
-        layout.addWidget(label_widget)
-        layout.addWidget(widget)
-
-    def _set_badge(self, label: QLabel, level: str, text: str):
-        level = (level or "neutral").lower()
-        palette = {
-            "success": ("rgba(114,226,163,0.22)", "rgba(204,255,223,0.94)", "rgba(114,226,163,0.32)"),
-            "warning": ("rgba(255,198,116,0.22)", "rgba(255,239,205,0.96)", "rgba(255,198,116,0.30)"),
-            "danger": ("rgba(255,117,117,0.22)", "rgba(255,220,220,0.96)", "rgba(255,117,117,0.30)"),
-            "info": ("rgba(129,191,255,0.22)", "rgba(225,239,255,0.96)", "rgba(129,191,255,0.30)"),
-            "neutral": ("rgba(255,255,255,0.12)", "rgba(248,244,250,0.92)", "rgba(255,255,255,0.16)"),
-        }
-        bg, fg, border = palette.get(level, palette["neutral"])
-        label.setText(text)
-        label.setStyleSheet(
-            f"background:{bg}; color:{fg}; border:1px solid {border}; border-radius:11px; padding:6px 10px; font-weight:700;"
+        self.style.configure(
+            "TCombobox",
+            fieldbackground=p.input_bg,
+            background=p.input_bg,
+            foreground=p.text,
+            arrowcolor=p.text,
+            bordercolor=p.line,
+            lightcolor=p.line,
+            darkcolor=p.line,
+            padding=(8, 6),
+        )
+        self.style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", p.input_bg)],
+            foreground=[("readonly", p.text)],
+            selectbackground=[("readonly", p.input_bg)],
+            selectforeground=[("readonly", p.text)],
         )
 
-    # -------------------------------------------------
-    # Navigation
-    # -------------------------------------------------
-    def _switch_page(self, index: int):
-        self.stack.setCurrentIndex(index)
-        for idx, btn in enumerate(self.nav_buttons):
-            btn.setChecked(idx == index)
-
-    def toggle_sidebar(self):
-        # 사이드바 기반 레이아웃은 제거하고 상단 탭 구조로 전환했습니다.
-        return
-
-    def _combo_data(self, combo: QComboBox, fallback: str) -> str:
-        value = combo.currentData()
-        return str(value) if value else fallback
-
-    def current_lang_code(self) -> str:
-        return self._combo_data(self.language_combo, DEFAULT_LANGUAGE)
-
-    def current_model_id(self) -> str:
-        return self._combo_data(self.model_combo, default_model_id())
-
-    def current_preset_id(self) -> str:
-        return self._combo_data(self.preset_combo, DEFAULT_PRESET_ID)
-
-    def current_preferred_device(self) -> str:
-        for value, btn in self.device_buttons.items():
-            if btn.isChecked():
-                return value
-        return DEFAULT_PREFERRED_DEVICE
-
-    def current_audio_enhance_level(self) -> str:
-        for value, btn in self.audio_buttons.items():
-            if btn.isChecked():
-                return value
-        return DEFAULT_AUDIO_ENHANCE_LEVEL
-
-    def current_output_formats(self) -> list[str]:
-        result = []
-        if self.output_fmt_srt.isChecked():
-            result.append("srt")
-        if self.output_fmt_txt.isChecked():
-            result.append("txt")
-        if self.output_fmt_vtt.isChecked():
-            result.append("vtt")
-        return result or list(DEFAULT_OUTPUT_FORMATS)
-
-    def _set_combo_by_data(self, combo: QComboBox, value: str):
-        for idx in range(combo.count()):
-            if combo.itemData(idx) == value:
-                combo.setCurrentIndex(idx)
-                return
-
-    def _set_preferred_device(self, value: str):
-        value = value if value in self.device_buttons else DEFAULT_PREFERRED_DEVICE
-        for key, btn in self.device_buttons.items():
-            btn.setChecked(key == value)
-        self._refresh_selection_hints()
-
-    def _set_audio_enhance_level(self, value: str):
-        value = value if value in self.audio_buttons else DEFAULT_AUDIO_ENHANCE_LEVEL
-        for key, btn in self.audio_buttons.items():
-            btn.setChecked(key == value)
-        self._refresh_selection_hints()
-
-    def _on_model_changed(self):
-        self._refresh_selection_hints()
-        self._refresh_model_state_local()
-
-    def _load_settings_into_ui(self):
-        self._set_combo_by_data(self.language_combo, self.settings.get("language", DEFAULT_LANGUAGE))
-        self._set_combo_by_data(self.model_combo, self.settings.get("model_id", default_model_id()))
-        self._set_combo_by_data(self.preset_combo, self.settings.get("preset_id", DEFAULT_PRESET_ID))
-        self._set_preferred_device(self.settings.get("preferred_device", DEFAULT_PREFERRED_DEVICE))
-        self._set_audio_enhance_level(self.settings.get("audio_enhance_level", DEFAULT_AUDIO_ENHANCE_LEVEL))
-        formats = self.settings.get("output_formats", DEFAULT_OUTPUT_FORMATS)
-        self.output_fmt_srt.setChecked("srt" in formats or not formats)
-        self.output_fmt_txt.setChecked("txt" in formats)
-        self.output_fmt_vtt.setChecked("vtt" in formats)
-
-    def save_ui_settings(self):
-        self.settings["language"] = self.current_lang_code()
-        self.settings["model_id"] = self.current_model_id()
-        self.settings["preset_id"] = self.current_preset_id()
-        self.settings["preferred_device"] = self.current_preferred_device()
-        self.settings["audio_enhance_level"] = self.current_audio_enhance_level()
-        self.settings["output_formats"] = self.current_output_formats()
-        save_settings(self.settings)
-
-    def _refresh_selection_hints(self):
-        lang_code = self.current_lang_code()
-        lang_name = get_language_korean_name(lang_code)
-        model_entry = next((m for m in MODEL_CATALOG if m["id"] == self.current_model_id()), None)
-        preset = get_transcription_preset(self.current_preset_id())
-        device_text = {"auto": "자동", "cuda": "GPU", "cpu": "CPU"}.get(self.current_preferred_device(), "자동")
-        audio_text = {"off": "끔", "standard": "표준", "strong": "강함"}.get(self.current_audio_enhance_level(), "끔")
-        outputs = ", ".join(fmt.upper() for fmt in self.current_output_formats())
-
-        self.quick_lang_value.setText(f"{lang_name} · {lang_code}")
-        self.quick_model_value.setText(model_entry["label"] if model_entry else self.current_model_id())
-        self.quick_preset_value.setText(preset["label"])
-        self.quick_device_value.setText(device_text)
-        self.quick_audio_value.setText(audio_text)
-        self.quick_output_value.setText(outputs)
-
-        self.launch_status_label.setText("준비됨" if not self.current_task_kind else self.current_task_label)
-        self.launch_meta_label.setText(
-            f"모델 {self.quick_model_value.text()} · 프리셋 {self.quick_preset_value.text()} · 출력 {outputs}"
+        self.style.configure(
+            "Horizontal.TProgressbar",
+            troughcolor=p.input_bg,
+            background=p.accent_2,
+            bordercolor=p.input_bg,
+            lightcolor=p.accent_2,
+            darkcolor=p.accent_2,
         )
 
-        device_note_map = {
-            "auto": "GPU와 CPU 중 안정적으로 동작하는 조합을 자동 선택합니다.",
-            "cuda": "GPU 가속을 우선 시도합니다. 실패하면 CPU fallback이 필요할 수 있습니다.",
-            "cpu": "호환성과 재현성을 우선합니다. 처리 시간은 더 길어질 수 있습니다.",
-        }
-        self.device_note_label.setText(device_note_map.get(self.current_preferred_device(), "장치 선호를 확인하십시오."))
-
-        rec = self._recommendations_for_current_inputs()
-        self.recommendation_summary_label.setText(rec.get("summary", ""))
-        self.recommendation_meta_label.setText(rec.get("meta", ""))
-
-        self.home_start_btn.setEnabled(bool(self.input_files) and not (self.worker_thread and self.worker_thread.is_alive()))
-        self.save_ui_settings()
-        self._refresh_file_summary()
-
-    # -------------------------------------------------
-    # Files / recommendations
-    # -------------------------------------------------
-    def browse_input_files(self):
-        files, _ = QFileDialog.getOpenFileNames(
-            self,
-            "전사할 파일 선택",
-            "",
-            "Media Files (*.mkv *.mp4 *.mov *.avi *.mp3 *.wav *.m4a *.flac *.ogg *.webm);;All Files (*)",
+        self.style.configure(
+            "TCheckbutton",
+            background=p.panel,
+            foreground=p.text,
+            font=base_font,
+            indicatorcolor=p.input_bg,
+            padding=(0, 4),
         )
-        if files:
-            self.set_input_files(files)
-
-    def add_more_input_files(self):
-        files, _ = QFileDialog.getOpenFileNames(
-            self,
-            "추가 파일 선택",
-            "",
-            "Media Files (*.mkv *.mp4 *.mov *.avi *.mp3 *.wav *.m4a *.flac *.ogg *.webm);;All Files (*)",
+        self.style.map(
+            "TCheckbutton",
+            background=[("active", p.panel)],
+            foreground=[("disabled", p.faint), ("active", p.text)],
         )
-        if files:
-            self.add_input_files(files)
 
-    def set_input_files(self, files: list[str]):
-        self.input_files = []
-        self.add_input_files(files)
+    def _create_variables(self) -> None:
+        s = self.settings
 
-    def add_input_files(self, files: list[str]):
-        known = {os.path.normcase(os.path.abspath(path)) for path in self.input_files}
-        for path in files:
-            norm = os.path.normcase(os.path.abspath(path))
-            if norm not in known and os.path.isfile(path):
-                self.input_files.append(path)
-                known.add(norm)
-        self._refresh_file_list_ui()
-        self._refresh_selection_hints()
+        language = s.get("language") or DEFAULT_LANGUAGE
+        model_id = s.get("model_id") or DEFAULT_MODEL_ID
+        preset_id = s.get("preset_id") or DEFAULT_PRESET_ID
+        device = s.get("preferred_device") or DEFAULT_PREFERRED_DEVICE
+        audio_level = s.get("audio_enhance_level") or DEFAULT_AUDIO_ENHANCE_LEVEL
 
-    def clear_input_files(self):
-        self.input_files = []
-        self._refresh_file_list_ui()
-        self._refresh_selection_hints()
+        self.language_var = tk.StringVar(value=self.language_code_to_display.get(language, self.language_code_to_display[DEFAULT_LANGUAGE]))
+        self.model_var = tk.StringVar(value=self.model_id_to_display.get(model_id, self.model_id_to_display[DEFAULT_MODEL_ID]))
+        self.preset_var = tk.StringVar(value=self.preset_id_to_display.get(preset_id, self.preset_id_to_display[DEFAULT_PRESET_ID]))
+        self.device_var = tk.StringVar(value=self.device_id_to_display.get(device, self.device_id_to_display[DEFAULT_PREFERRED_DEVICE]))
+        self.audio_var = tk.StringVar(value=self.audio_id_to_display.get(audio_level, self.audio_id_to_display[DEFAULT_AUDIO_ENHANCE_LEVEL]))
 
-    def remove_selected_input_files(self):
-        selected = self.file_list.selectedItems()
-        if not selected:
-            return
-        remove_set = {item.data(Qt.ItemDataRole.UserRole) for item in selected}
-        self.input_files = [path for path in self.input_files if path not in remove_set]
-        self._refresh_file_list_ui()
-        self._refresh_selection_hints()
+        formats = s.get("output_formats") or DEFAULT_OUTPUT_FORMATS
+        self.output_srt_var = tk.BooleanVar(value="srt" in formats)
+        self.output_vtt_var = tk.BooleanVar(value="vtt" in formats)
+        self.output_txt_var = tk.BooleanVar(value="txt" in formats)
 
-    def _refresh_file_list_ui(self):
-        self.file_list.clear()
-        for path in self.input_files:
-            item = QListWidgetItem(os.path.basename(path))
-            item.setData(Qt.ItemDataRole.UserRole, path)
-            item.setToolTip(path)
-            self.file_list.addItem(item)
-        has_files = bool(self.input_files)
-        self.remove_file_btn.setEnabled(has_files)
-        self.clear_file_btn.setEnabled(has_files)
-        if hasattr(self, "home_start_btn"):
-            self.home_start_btn.setEnabled(has_files and not bool(self.current_task_kind))
+        self.status_title_var = tk.StringVar(value="대기 중")
+        self.status_meta_var = tk.StringVar(value="")
+        self.progress_var = tk.DoubleVar(value=0.0)
+        self.progress_text_var = tk.StringVar(value="0%")
+        self.elapsed_var = tk.StringVar(value="00:00")
+        self.file_count_var = tk.StringVar(value="0개 파일")
+        self.output_summary_var = tk.StringVar(value="SRT")
+        self.model_state_var = tk.StringVar(value="모델 상태 확인 전")
+        self.engine_state_var = tk.StringVar(value="엔진 상태 확인 전")
+        self.device_state_var = tk.StringVar(value="장치 상태 확인 전")
+        self.resource_state_var = tk.StringVar(value="자원 상태 확인 전")
+        self.selection_summary_var = tk.StringVar(value="설정 요약 대기")
 
-    def _refresh_file_summary(self):
-        valid = [path for path in self.input_files if os.path.isfile(path)]
-        if not valid:
-            self.file_summary_label.setText("선택된 파일이 없습니다.")
-            return
-        if len(valid) == 1:
-            text = f"1개 파일 · {os.path.basename(valid[0])}\n{valid[0]}"
-        else:
-            text = f"총 {len(valid)}개 파일 선택됨 · 마지막 파일 {os.path.basename(valid[-1])}"
-        self.file_summary_label.setText(text)
+    # ------------------------------------------------------------------
+    # Layout
+    # ------------------------------------------------------------------
+    def _build_layout(self) -> None:
+        self.grid_columnconfigure(0, weight=0)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-    def _recommendations_for_current_inputs(self) -> dict:
-        result = {
-            "summary": "파일을 선택하면 입력 특성을 바탕으로 프리셋, 음성 보정, 출력 형식을 제안합니다.",
-            "meta": "",
-            "preset_id": None,
-            "audio_enhance_level": None,
-            "output_formats": None,
-            "model_id": None,
-        }
-        if not self.input_files:
-            return result
+        self.sidebar = tk.Frame(self, bg=self.palette.panel, width=300, bd=0, highlightthickness=0)
+        self.sidebar.grid(row=0, column=0, sticky="ns")
+        self.sidebar.grid_propagate(False)
 
-        names = " ".join(os.path.basename(path).lower() for path in self.input_files)
-        exts = {os.path.splitext(path)[1].lower() for path in self.input_files}
-        batch_count = len(self.input_files)
+        self.main = tk.Frame(self, bg=self.palette.bg, bd=0, highlightthickness=0)
+        self.main.grid(row=0, column=1, sticky="nsew")
+        self.main.grid_columnconfigure(0, weight=1)
+        self.main.grid_rowconfigure(1, weight=1)
 
-        durations = []
-        for path in self.input_files[:8]:
+        self._build_sidebar()
+        self._build_header()
+        self._build_content()
+        self._build_footer()
+
+    def _build_sidebar(self) -> None:
+        p = self.palette
+        self.sidebar.grid_columnconfigure(0, weight=1)
+
+        brand = tk.Frame(self.sidebar, bg=p.panel)
+        brand.grid(row=0, column=0, sticky="ew", padx=24, pady=(26, 18))
+        brand.grid_columnconfigure(0, weight=1)
+
+        tk.Label(
+            brand,
+            text="Whisper\nStudio",
+            bg=p.panel,
+            fg=p.text,
+            justify="left",
+            font=("Segoe UI Semibold", 24),
+        ).grid(row=0, column=0, sticky="w")
+
+        tk.Label(
+            brand,
+            text=APP_TAGLINE,
+            bg=p.panel,
+            fg=p.muted,
+            justify="left",
+            wraplength=240,
+            font=("Segoe UI", 9),
+        ).grid(row=1, column=0, sticky="w", pady=(8, 0))
+
+        self.status_card = self._make_side_card(self.sidebar, "현재 상태", self.status_title_var, self.status_meta_var)
+        self.status_card.grid(row=1, column=0, sticky="ew", padx=18, pady=(8, 12))
+
+        progress_box = tk.Frame(self.sidebar, bg=p.panel_2, highlightbackground=p.line, highlightthickness=1)
+        progress_box.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 12))
+        progress_box.grid_columnconfigure(0, weight=1)
+        tk.Label(progress_box, text="진행률", bg=p.panel_2, fg=p.text, font=("Segoe UI Semibold", 10)).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 4))
+        tk.Label(progress_box, textvariable=self.progress_text_var, bg=p.panel_2, fg=p.accent_2, font=("Segoe UI Semibold", 18)).grid(row=1, column=0, sticky="w", padx=16)
+        ttk.Progressbar(progress_box, variable=self.progress_var, maximum=100, mode="determinate").grid(row=2, column=0, sticky="ew", padx=16, pady=(8, 8))
+        tk.Label(progress_box, textvariable=self.elapsed_var, bg=p.panel_2, fg=p.muted, font=("Segoe UI", 9)).grid(row=3, column=0, sticky="w", padx=16, pady=(0, 14))
+
+        self._make_side_card(self.sidebar, "파일", self.file_count_var, self.selection_summary_var).grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 12))
+        self._make_side_card(self.sidebar, "출력", self.output_summary_var, tk.StringVar(value="입력 파일과 같은 폴더에 저장")).grid(row=4, column=0, sticky="ew", padx=18, pady=(0, 12))
+
+        button_box = tk.Frame(self.sidebar, bg=p.panel)
+        button_box.grid(row=5, column=0, sticky="ew", padx=18, pady=(6, 16))
+        button_box.grid_columnconfigure(0, weight=1)
+        self.start_button = ttk.Button(button_box, text="전사 시작", style="Primary.TButton", command=self.start_transcription)
+        self.start_button.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.cancel_button = ttk.Button(button_box, text="중단", style="Danger.TButton", command=self.cancel_current_task, state="disabled")
+        self.cancel_button.grid(row=1, column=0, sticky="ew")
+
+        bottom = tk.Frame(self.sidebar, bg=p.panel)
+        bottom.grid(row=99, column=0, sticky="sew", padx=24, pady=(12, 24))
+        self.sidebar.grid_rowconfigure(98, weight=1)
+        tk.Label(bottom, text=f"v{APP_VERSION}", bg=p.panel, fg=p.faint, font=("Segoe UI", 9)).pack(anchor="w")
+        tk.Label(bottom, text="Tkinter redesign", bg=p.panel, fg=p.faint, font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
+
+    def _make_side_card(self, parent: tk.Widget, title: str, main_var: tk.StringVar, meta_var: tk.StringVar) -> tk.Frame:
+        p = self.palette
+        card = tk.Frame(parent, bg=p.panel_2, highlightbackground=p.line, highlightthickness=1)
+        card.grid_columnconfigure(0, weight=1)
+        tk.Label(card, text=title, bg=p.panel_2, fg=p.muted, font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 2))
+        tk.Label(card, textvariable=main_var, bg=p.panel_2, fg=p.text, font=("Segoe UI Semibold", 12), wraplength=235, justify="left").grid(row=1, column=0, sticky="w", padx=16)
+        tk.Label(card, textvariable=meta_var, bg=p.panel_2, fg=p.muted, font=("Segoe UI", 9), wraplength=235, justify="left").grid(row=2, column=0, sticky="w", padx=16, pady=(4, 14))
+        return card
+
+    def _build_header(self) -> None:
+        p = self.palette
+        header = tk.Frame(self.main, bg=p.bg)
+        header.grid(row=0, column=0, sticky="ew", padx=28, pady=(22, 14))
+        header.grid_columnconfigure(0, weight=1)
+
+        tk.Label(header, text="새 작업", bg=p.bg, fg=p.text, font=("Segoe UI Semibold", 22)).grid(row=0, column=0, sticky="w")
+        tk.Label(header, text="파일 추가 → 설정 선택 → 실행 상태 확인 → 자막 저장", bg=p.bg, fg=p.muted, font=("Segoe UI", 10)).grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        actions = tk.Frame(header, bg=p.bg)
+        actions.grid(row=0, column=1, rowspan=2, sticky="e")
+        self.check_button = ttk.Button(actions, text="환경 점검", style="Ghost.TButton", command=self.run_environment_probe)
+        self.check_button.grid(row=0, column=0, padx=(0, 8))
+        self.download_button = ttk.Button(actions, text="모델 다운로드", style="Ghost.TButton", command=self.download_selected_model)
+        self.download_button.grid(row=0, column=1)
+
+    def _build_content(self) -> None:
+        content = tk.Frame(self.main, bg=self.palette.bg)
+        content.grid(row=1, column=0, sticky="nsew", padx=28, pady=(0, 14))
+        content.grid_columnconfigure(0, weight=1, uniform="main")
+        content.grid_columnconfigure(1, weight=1, uniform="main")
+        content.grid_rowconfigure(0, weight=1)
+
+        left = tk.Frame(content, bg=self.palette.panel, highlightbackground=self.palette.line, highlightthickness=1)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        left.grid_columnconfigure(0, weight=1)
+        left.grid_rowconfigure(2, weight=1)
+
+        right = tk.Frame(content, bg=self.palette.panel, highlightbackground=self.palette.line, highlightthickness=1)
+        right.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(2, weight=1)
+
+        self._build_file_panel(left)
+        self._build_settings_panel(left)
+        self._build_log_panel(right)
+        self._build_status_panel(right)
+
+    def _build_file_panel(self, parent: tk.Frame) -> None:
+        p = self.palette
+        header = tk.Frame(parent, bg=p.panel)
+        header.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
+        header.grid_columnconfigure(0, weight=1)
+        tk.Label(header, text="입력 파일", bg=p.panel, fg=p.text, font=("Segoe UI Semibold", 13)).grid(row=0, column=0, sticky="w")
+        tk.Label(header, text="영상/음성 파일을 여러 개 넣으면 순서대로 처리합니다.", bg=p.panel, fg=p.muted, font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w", pady=(3, 0))
+
+        buttons = tk.Frame(header, bg=p.panel)
+        buttons.grid(row=0, column=1, rowspan=2, sticky="e")
+        self.add_files_button = ttk.Button(buttons, text="파일 추가", style="Ghost.TButton", command=self.add_files)
+        self.add_files_button.grid(row=0, column=0, padx=(0, 6))
+        self.add_folder_button = ttk.Button(buttons, text="폴더 추가", style="Ghost.TButton", command=self.add_folder)
+        self.add_folder_button.grid(row=0, column=1)
+
+        self.file_list_frame = tk.Frame(parent, bg=p.input_bg, highlightbackground=p.line, highlightthickness=1)
+        self.file_list_frame.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 12))
+        self.file_list_frame.grid_columnconfigure(0, weight=1)
+        self.file_list_frame.grid_rowconfigure(0, weight=1)
+
+        self.file_listbox = tk.Listbox(
+            self.file_list_frame,
+            bg=p.input_bg,
+            fg=p.text,
+            selectbackground=p.accent,
+            selectforeground="#FFFFFF",
+            activestyle="none",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            font=("Segoe UI", 10),
+        )
+        self.file_listbox.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=8)
+        file_scroll = ttk.Scrollbar(self.file_list_frame, orient="vertical", command=self.file_listbox.yview)
+        file_scroll.grid(row=0, column=1, sticky="ns", pady=8, padx=(0, 8))
+        self.file_listbox.configure(yscrollcommand=file_scroll.set)
+
+        file_controls = tk.Frame(parent, bg=p.panel)
+        file_controls.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 18))
+        file_controls.grid_columnconfigure(4, weight=1)
+        self.remove_file_button = ttk.Button(file_controls, text="선택 제거", style="Ghost.TButton", command=self.remove_selected_file)
+        self.remove_file_button.grid(row=0, column=0, padx=(0, 8))
+        self.clear_files_button = ttk.Button(file_controls, text="전체 비우기", style="Ghost.TButton", command=self.clear_files)
+        self.clear_files_button.grid(row=0, column=1, padx=(0, 8))
+        self.move_up_button = ttk.Button(file_controls, text="위로", style="Ghost.TButton", command=lambda: self.move_selected_file(-1))
+        self.move_up_button.grid(row=0, column=2, padx=(0, 8))
+        self.move_down_button = ttk.Button(file_controls, text="아래로", style="Ghost.TButton", command=lambda: self.move_selected_file(1))
+        self.move_down_button.grid(row=0, column=3)
+
+    def _build_settings_panel(self, parent: tk.Frame) -> None:
+        p = self.palette
+        panel = tk.Frame(parent, bg=p.panel)
+        panel.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 18))
+        panel.grid_columnconfigure(0, weight=1)
+        panel.grid_columnconfigure(1, weight=1)
+
+        tk.Label(panel, text="전사 설정", bg=p.panel, fg=p.text, font=("Segoe UI Semibold", 13)).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        self._setting_combo(panel, 1, 0, "언어", self.language_var, list(self.language_display_to_code.keys()))
+        self._setting_combo(panel, 1, 1, "모델", self.model_var, [m["display"] for m in MODEL_CATALOG])
+        self._setting_combo(panel, 3, 0, "프리셋", self.preset_var, [p["display"] for p in TRANSCRIPTION_PRESETS])
+        self._setting_combo(panel, 3, 1, "장치", self.device_var, [display for _code, display in DEVICE_OPTIONS])
+        self._setting_combo(panel, 5, 0, "음성 보정", self.audio_var, [display for _code, display in AUDIO_ENHANCE_OPTIONS])
+
+        output_box = tk.Frame(panel, bg=p.panel)
+        output_box.grid(row=5, column=1, sticky="ew", padx=(8, 0), pady=(0, 10))
+        tk.Label(output_box, text="출력 형식", bg=p.panel, fg=p.muted, font=("Segoe UI", 9)).pack(anchor="w")
+        checks = tk.Frame(output_box, bg=p.panel)
+        checks.pack(anchor="w", fill="x", pady=(2, 0))
+        ttk.Checkbutton(checks, text="SRT", variable=self.output_srt_var, command=self._on_setting_changed).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(checks, text="VTT", variable=self.output_vtt_var, command=self._on_setting_changed).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(checks, text="TXT", variable=self.output_txt_var, command=self._on_setting_changed).pack(side="left")
+
+    def _setting_combo(self, parent: tk.Frame, row: int, col: int, label: str, variable: tk.StringVar, values: list[str]) -> ttk.Combobox:
+        p = self.palette
+        box = tk.Frame(parent, bg=p.panel)
+        box.grid(row=row, column=col, sticky="ew", padx=(0 if col == 0 else 8, 8 if col == 0 else 0), pady=(0, 10))
+        box.grid_columnconfigure(0, weight=1)
+        tk.Label(box, text=label, bg=p.panel, fg=p.muted, font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w")
+        combo = ttk.Combobox(box, textvariable=variable, values=values, state="readonly")
+        combo.grid(row=1, column=0, sticky="ew", pady=(4, 0), ipady=2)
+        combo.bind("<<ComboboxSelected>>", lambda _event: self._on_setting_changed())
+        return combo
+
+    def _build_log_panel(self, parent: tk.Frame) -> None:
+        p = self.palette
+        header = tk.Frame(parent, bg=p.panel)
+        header.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
+        header.grid_columnconfigure(0, weight=1)
+        tk.Label(header, text="실행 로그", bg=p.panel, fg=p.text, font=("Segoe UI Semibold", 13)).grid(row=0, column=0, sticky="w")
+        tk.Label(header, text="전처리, 모델 로딩, 세그먼트 처리, 저장 경로를 표시합니다.", bg=p.panel, fg=p.muted, font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w", pady=(3, 0))
+        self.clear_log_button = ttk.Button(header, text="로그 비우기", style="Ghost.TButton", command=self.clear_log)
+        self.clear_log_button.grid(row=0, column=1, rowspan=2, sticky="e")
+
+        self.log_frame = tk.Frame(parent, bg=p.input_bg, highlightbackground=p.line, highlightthickness=1)
+        self.log_frame.grid(row=1, column=0, sticky="nsew", padx=18, pady=(0, 12))
+        self.log_frame.grid_columnconfigure(0, weight=1)
+        self.log_frame.grid_rowconfigure(0, weight=1)
+
+        self.log_text = tk.Text(
+            self.log_frame,
+            bg=p.input_bg,
+            fg=p.text,
+            insertbackground=p.text,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            wrap="word",
+            font=("Consolas", 10),
+            undo=False,
+        )
+        self.log_text.grid(row=0, column=0, sticky="nsew", padx=(10, 0), pady=10)
+        log_scroll = ttk.Scrollbar(self.log_frame, orient="vertical", command=self.log_text.yview)
+        log_scroll.grid(row=0, column=1, sticky="ns", pady=10, padx=(0, 10))
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+        self.log_text.tag_configure("muted", foreground=p.muted)
+        self.log_text.tag_configure("success", foreground=p.success)
+        self.log_text.tag_configure("warning", foreground=p.warning)
+        self.log_text.tag_configure("danger", foreground=p.danger)
+        self.log_text.tag_configure("accent", foreground=p.accent_2)
+
+    def _build_status_panel(self, parent: tk.Frame) -> None:
+        p = self.palette
+        status = tk.Frame(parent, bg=p.panel)
+        status.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 18))
+        status.grid_columnconfigure(0, weight=1)
+        status.grid_columnconfigure(1, weight=1)
+
+        self._small_status_card(status, 0, 0, "모델", self.model_state_var)
+        self._small_status_card(status, 0, 1, "엔진", self.engine_state_var)
+        self._small_status_card(status, 1, 0, "장치", self.device_state_var)
+        self._small_status_card(status, 1, 1, "자원", self.resource_state_var)
+
+    def _small_status_card(self, parent: tk.Frame, row: int, col: int, title: str, value_var: tk.StringVar) -> None:
+        p = self.palette
+        card = tk.Frame(parent, bg=p.panel_2, highlightbackground=p.line, highlightthickness=1)
+        card.grid(row=row, column=col, sticky="ew", padx=(0 if col == 0 else 8, 8 if col == 0 else 0), pady=(0 if row == 0 else 8, 8))
+        card.grid_columnconfigure(0, weight=1)
+        tk.Label(card, text=title, bg=p.panel_2, fg=p.muted, font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=14, pady=(10, 1))
+        tk.Label(card, textvariable=value_var, bg=p.panel_2, fg=p.text, font=("Segoe UI Semibold", 10), wraplength=285, justify="left").grid(row=1, column=0, sticky="w", padx=14, pady=(0, 12))
+
+    def _build_footer(self) -> None:
+        p = self.palette
+        footer = tk.Frame(self.main, bg=p.bg)
+        footer.grid(row=2, column=0, sticky="ew", padx=28, pady=(0, 20))
+        footer.grid_columnconfigure(0, weight=1)
+        tk.Label(footer, text="선택 모델이 로컬 캐시에 없으면 다운로드 버튼으로 먼저 준비할 수 있습니다.", bg=p.bg, fg=p.faint, font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w")
+        self.open_output_button = ttk.Button(footer, text="최근 저장 폴더 열기", style="Ghost.TButton", command=self.open_last_output_folder)
+        self.open_output_button.grid(row=0, column=1, sticky="e")
+
+    def _bind_events(self) -> None:
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<Control-o>", lambda _event: self.add_files())
+        self.bind("<Control-l>", lambda _event: self.clear_log())
+        self.bind("<F5>", lambda _event: self.run_environment_probe())
+
+    # ------------------------------------------------------------------
+    # UI event bridge
+    # ------------------------------------------------------------------
+    def _ui(self, func: Callable[[], None]) -> None:
+        self.event_queue.put(func)
+
+    def _process_ui_events(self) -> None:
+        while True:
             try:
-                duration = probe_media_duration_seconds(path)
-                if duration:
-                    durations.append(duration)
+                func = self.event_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                func()
+            except Exception:
+                traceback.print_exc()
+        self.after(80, self._process_ui_events)
+
+    # ------------------------------------------------------------------
+    # File queue
+    # ------------------------------------------------------------------
+    def add_files(self) -> None:
+        if self.busy:
+            return
+        paths = filedialog.askopenfilenames(
+            title="전사할 영상 또는 음성 파일 선택",
+            filetypes=[
+                ("지원 미디어", "*.mkv *.mp4 *.mov *.avi *.mp3 *.wav *.m4a *.flac *.ogg *.webm"),
+                ("모든 파일", "*.*"),
+            ],
+        )
+        self._append_files(list(paths))
+
+    def add_folder(self) -> None:
+        if self.busy:
+            return
+        folder = filedialog.askdirectory(title="미디어 파일이 들어 있는 폴더 선택")
+        if not folder:
+            return
+        collected: list[str] = []
+        for root, _dirs, names in os.walk(folder):
+            for name in names:
+                path = os.path.join(root, name)
+                if os.path.splitext(name)[1].lower() in SUPPORTED_MEDIA_EXTS:
+                    collected.append(path)
+        collected.sort(key=lambda x: x.lower())
+        self._append_files(collected)
+
+    def _append_files(self, paths: list[str]) -> None:
+        added = 0
+        known = {os.path.normcase(os.path.abspath(p)) for p in self.files}
+        for path in paths:
+            if not path:
+                continue
+            ext = os.path.splitext(path)[1].lower()
+            if ext not in SUPPORTED_MEDIA_EXTS:
+                continue
+            full = os.path.abspath(path)
+            norm = os.path.normcase(full)
+            if norm in known:
+                continue
+            self.files.append(full)
+            known.add(norm)
+            added += 1
+        if added:
+            self._log(f"입력 파일 추가: {added}개", "accent")
+        self._refresh_file_list()
+        self._refresh_selection_summary()
+
+    def remove_selected_file(self) -> None:
+        if self.busy:
+            return
+        selection = list(self.file_listbox.curselection())
+        if not selection:
+            return
+        for index in reversed(selection):
+            if 0 <= index < len(self.files):
+                del self.files[index]
+        self._refresh_file_list()
+        self._refresh_selection_summary()
+
+    def clear_files(self) -> None:
+        if self.busy:
+            return
+        self.files.clear()
+        self._refresh_file_list()
+        self._refresh_selection_summary()
+        self._log("입력 파일 목록을 비웠습니다.", "muted")
+
+    def move_selected_file(self, direction: int) -> None:
+        if self.busy:
+            return
+        selection = self.file_listbox.curselection()
+        if not selection:
+            return
+        idx = selection[0]
+        new_idx = idx + direction
+        if new_idx < 0 or new_idx >= len(self.files):
+            return
+        self.files[idx], self.files[new_idx] = self.files[new_idx], self.files[idx]
+        self._refresh_file_list()
+        self.file_listbox.selection_set(new_idx)
+        self.file_listbox.activate(new_idx)
+
+    def _refresh_file_list(self) -> None:
+        self.file_listbox.delete(0, tk.END)
+        for index, path in enumerate(self.files, start=1):
+            self.file_listbox.insert(tk.END, f"{index:02d}. {os.path.basename(path)}")
+        self.file_count_var.set(f"{len(self.files)}개 파일")
+        self._update_buttons_state()
+
+    # ------------------------------------------------------------------
+    # Settings
+    # ------------------------------------------------------------------
+    def _on_setting_changed(self) -> None:
+        self._refresh_selection_summary()
+        try:
+            save_settings(self._collect_current_settings())
+        except Exception:
+            pass
+
+    def _collect_current_settings(self) -> dict:
+        formats: list[str] = []
+        if self.output_srt_var.get():
+            formats.append("srt")
+        if self.output_vtt_var.get():
+            formats.append("vtt")
+        if self.output_txt_var.get():
+            formats.append("txt")
+        if not formats:
+            formats = ["srt"]
+            self.output_srt_var.set(True)
+
+        current = dict(self.settings or {})
+        current.update(
+            {
+                "language": self.language_display_to_code.get(self.language_var.get(), DEFAULT_LANGUAGE),
+                "model_id": self.model_display_to_id.get(self.model_var.get(), DEFAULT_MODEL_ID),
+                "preset_id": self.preset_display_to_id.get(self.preset_var.get(), DEFAULT_PRESET_ID),
+                "preferred_device": self.device_display_to_id.get(self.device_var.get(), DEFAULT_PREFERRED_DEVICE),
+                "audio_enhance_level": self.audio_display_to_id.get(self.audio_var.get(), DEFAULT_AUDIO_ENHANCE_LEVEL),
+                "output_formats": formats,
+            }
+        )
+        return current
+
+    def _refresh_selection_summary(self) -> None:
+        settings = self._collect_current_settings()
+        model = get_model_entry(settings["model_id"])["label"]
+        device = self.device_id_to_display.get(settings["preferred_device"], settings["preferred_device"])
+        preset = self.preset_id_to_display.get(settings["preset_id"], settings["preset_id"])
+        formats = ", ".join(fmt.upper() for fmt in settings["output_formats"])
+        self.selection_summary_var.set(f"{model} · {device} · {preset}")
+        self.output_summary_var.set(formats)
+
+    # ------------------------------------------------------------------
+    # Status, log, resources
+    # ------------------------------------------------------------------
+    def _set_status(self, title: str, meta: str = "", level: str = "neutral") -> None:
+        self.status_title_var.set(title)
+        self.status_meta_var.set(meta)
+
+    def _set_progress(self, value: float) -> None:
+        value = max(0.0, min(100.0, float(value)))
+        self.progress_var.set(value)
+        self.progress_text_var.set(f"{value:.0f}%")
+
+    def _log(self, message: str, tag: str | None = None) -> None:
+        stamp = time.strftime("%H:%M:%S")
+        self.log_text.insert(tk.END, f"[{stamp}] ", "muted")
+        if tag:
+            self.log_text.insert(tk.END, message + "\n", tag)
+        else:
+            self.log_text.insert(tk.END, message + "\n")
+        self.log_text.see(tk.END)
+
+    def _thread_log(self, message: str, tag: str | None = None) -> None:
+        self._ui(lambda: self._log(message, tag))
+
+    def clear_log(self) -> None:
+        self.log_text.delete("1.0", tk.END)
+
+    def _refresh_elapsed(self) -> None:
+        if self.busy and self.start_time is not None:
+            elapsed = int(time.time() - self.start_time)
+            minutes, seconds = divmod(elapsed, 60)
+            hours, minutes = divmod(minutes, 60)
+            if hours:
+                text = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            else:
+                text = f"{minutes:02d}:{seconds:02d}"
+            self.elapsed_var.set(text)
+            self.after(500, self._refresh_elapsed)
+
+    def _run_startup_probe(self) -> None:
+        self.run_environment_probe(background=True)
+
+    def run_environment_probe(self, background: bool = False) -> None:
+        if self.busy and not background:
+            return
+
+        settings = self._collect_current_settings()
+        self._log("환경 점검 시작", "accent")
+
+        def worker() -> None:
+            try:
+                status = collect_startup_status(settings)
+                self._ui(lambda: self._apply_startup_status(status))
+                self._thread_log("환경 점검 완료", "success")
+            except Exception as exc:
+                self._thread_log(f"환경 점검 실패: {exc}", "danger")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_startup_status(self, status: dict) -> None:
+        model = status.get("model", {})
+        engine = status.get("engine", {})
+        device = status.get("device", {})
+        resources = status.get("resources", {})
+        self.model_state_var.set(f"{model.get('summary', '')} · {model.get('meta', '')}")
+        self.engine_state_var.set(f"{engine.get('summary', '')} · {engine.get('meta', '')}")
+        self.device_state_var.set(f"{device.get('summary', '')} · {device.get('meta', '')}")
+        self.resource_state_var.set(f"{resources.get('summary', '')} · {resources.get('meta', '')}")
+
+    def _refresh_live_resources_loop(self) -> None:
+        def worker() -> None:
+            try:
+                status = collect_live_resource_status()
+                self._ui(lambda: self.resource_state_var.set(
+                    f"{status.get('pressure_label', '정보 없음')} · CPU {status.get('system_cpu_text', '정보 없음')} · RAM {status.get('ram_text', '정보 없음')}"
+                ))
             except Exception:
                 pass
-        avg_duration = sum(durations) / len(durations) if durations else 0.0
-        total_duration = sum(durations) if durations else 0.0
 
-        noisy_keywords = ["noise", "noisy", "live", "field", "record", "현장", "소음", "잡음", "녹음"]
-        lecture_keywords = ["lecture", "meeting", "seminar", "class", "회의", "강의", "세미나", "수업", "발표"]
-        dialogue_keywords = ["interview", "dialogue", "drama", "movie", "podcast", "인터뷰", "드라마", "영화", "대화"]
-        video_exts = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(4000, self._refresh_live_resources_loop)
 
-        preset_id = "auto-balanced"
-        audio_level = "off"
-        why = []
-        if any(keyword in names for keyword in noisy_keywords):
-            preset_id = "noisy-performance"
-            audio_level = "strong"
-            why.append("파일명에 현장/잡음 계열 단서가 있어 잡음 대응 프리셋을 우선 권장했습니다.")
-        elif avg_duration >= 1200 or any(keyword in names for keyword in lecture_keywords):
-            preset_id = "lecture-meeting"
-            audio_level = "standard"
-            why.append("긴 발화 또는 강의/회의 계열로 보여 연속 발화 프리셋을 권장했습니다.")
-        elif exts & video_exts or any(keyword in names for keyword in dialogue_keywords):
-            preset_id = "dialogue-video"
-            audio_level = "standard"
-            why.append("영상 또는 대사형 콘텐츠로 보여 대사형 프리셋을 권장했습니다.")
-        else:
-            why.append("특정 단서가 강하지 않아 균형 프리셋을 유지하는 편이 안전합니다.")
-
-        output_formats = ["srt"]
-        if batch_count >= 3:
-            output_formats.append("txt")
-            why.append("여러 파일을 한 번에 처리하므로 전체 검토용 TXT 동시 저장을 권장했습니다.")
-        if exts & video_exts:
-            output_formats.append("vtt")
-            why.append("영상 파일이 포함되어 웹/플레이어 호환용 VTT 저장을 함께 권장했습니다.")
-
-        model_id = None
-        if self.current_preferred_device() == "cpu":
-            if total_duration >= 7200 or batch_count >= 5:
-                model_id = "small"
-                why.append("CPU 기준 작업량이 커 보여 처리 시간을 줄이기 위해 Small 모델을 권장했습니다.")
-        elif preset_id == "quality-priority" and batch_count <= 2:
-            model_id = "large-v3"
-
-        result.update({
-            "summary": f"권장 프리셋 {get_transcription_preset(preset_id)['label']} · 음성 보정 {{'off':'끔','standard':'표준','strong':'강함'}}[audio_level] · 출력 {', '.join(fmt.upper() for fmt in output_formats)}",
-            "meta": " ".join(why),
-            "preset_id": preset_id,
-            "audio_enhance_level": audio_level,
-            "output_formats": output_formats,
-            "model_id": model_id,
-        })
-        return result
-
-    def apply_recommendations(self):
-        rec = self._recommendations_for_current_inputs()
-        preset_id = rec.get("preset_id")
-        audio_level = rec.get("audio_enhance_level")
-        output_formats = rec.get("output_formats") or list(DEFAULT_OUTPUT_FORMATS)
-        model_id = rec.get("model_id")
-
-        if preset_id:
-            self._set_combo_by_data(self.preset_combo, preset_id)
-        if audio_level:
-            self._set_audio_enhance_level(audio_level)
-        self.output_fmt_srt.setChecked("srt" in output_formats)
-        self.output_fmt_txt.setChecked("txt" in output_formats)
-        self.output_fmt_vtt.setChecked("vtt" in output_formats)
-        if model_id:
-            self._set_combo_by_data(self.model_combo, model_id)
-        self._refresh_selection_hints()
-        self._append_log("자동 권장 설정을 적용했습니다.")
-
-    def _format_preprocess_summary(self, preprocess_info: dict | None) -> str:
-        if not preprocess_info:
-            return ""
-        summary = str(preprocess_info.get("summary", "")).strip()
-        if summary:
-            return summary
-        mode = preprocess_info.get("mode", "")
-        if mode == "enhanced":
-            label = {"standard": "표준", "strong": "강함"}.get(preprocess_info.get("applied_level"), "적용")
-            return f"전처리 완료 · 음성 보정 {label} 적용"
-        if mode == "fallback-basic":
-            return "전처리 fallback · 기본 전처리 사용"
-        if mode == "basic":
-            return "전처리 완료 · 기본 추출 사용"
-        return "원본 입력 사용"
-
-    def _update_preprocess_status(self, preprocess_info: dict | None, input_path: str | None = None):
-        summary = self._format_preprocess_summary(preprocess_info)
-        if not summary:
-            self.activity_preprocess_label.setText("")
+    # ------------------------------------------------------------------
+    # Model download
+    # ------------------------------------------------------------------
+    def download_selected_model(self) -> None:
+        if self.busy:
             return
-        prefix = f"전처리 · {os.path.basename(input_path)} · " if input_path and len(self.input_files) > 1 else "전처리 · "
-        self.activity_preprocess_label.setText(prefix + summary)
+        settings = self._collect_current_settings()
+        model_id = settings["model_id"]
+        model_label = get_model_entry(model_id)["label"]
 
-    # -------------------------------------------------
-    # Status / logs / progress
-    # -------------------------------------------------
-    def _append_log(self, message: str):
-        timestamp = time.strftime("%H:%M:%S")
-        self.log_text.appendPlainText(f"[{timestamp}] {message}")
-        cursor = self.log_text.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        self.log_text.setTextCursor(cursor)
+        self.cancel_event.clear()
+        self._set_busy(True)
+        self.start_time = time.time()
+        self._refresh_elapsed()
+        self._set_progress(0.0)
+        self._set_status("모델 다운로드", model_label, "neutral")
+        self._log(f"모델 다운로드 준비: {model_label}", "accent")
 
-    def _set_status(self, text: str):
-        self.footer_status_label.setText(text)
-        if hasattr(self, "activity_status_label"):
-            self.activity_status_label.setText(text)
-        if hasattr(self, "launch_status_label"):
-            self.launch_status_label.setText(text)
+        def worker() -> None:
+            try:
+                info = inspect_model_availability(model_id, include_remote_meta=True)
+                if info.get("is_cached"):
+                    self._thread_log(f"이미 준비된 모델입니다: {info.get('label')}", "success")
+                    self._ui(lambda: self._set_progress(100.0))
+                    self._ui(lambda: self._set_status("모델 준비 완료", info.get("label", model_label), "success"))
+                    return
 
-    def _set_transfer_texts(self, headline: str, meta: str = ""):
-        self.footer_transfer_label.setText(headline)
-        if hasattr(self, "activity_status_meta_label"):
-            self.activity_status_meta_label.setText(headline)
-        self.footer_meta_label.setText(meta)
-        if hasattr(self, "launch_meta_label") and headline:
-            self.launch_meta_label.setText(headline if not meta else f"{headline}\n{meta}")
-        if meta and hasattr(self, "activity_job_meta_label"):
-            self.activity_job_meta_label.setText(meta)
+                self._thread_log(f"다운로드 대상: {info.get('download_source', model_id)}")
+                self._thread_log(f"저장 위치: {info.get('download_target_display', '')}")
 
-    def _set_progress_value(self, percent: float):
-        value = int(max(0.0, min(100.0, percent)))
-        self.current_progress_percent = value
-        for bar in [self.footer_progress, self.activity_progress]:
-            if bar.maximum() == 0:
-                bar.setRange(0, 100)
-            bar.setValue(value)
+                def progress(payload: dict) -> None:
+                    pct = payload.get("percent")
+                    msg = payload.get("message", "")
+                    if pct is not None:
+                        self._ui(lambda pct=pct: self._set_progress(float(pct)))
+                    if msg:
+                        self._ui(lambda msg=msg: self.status_meta_var.set(msg))
 
-    def _progress_busy_on(self):
-        for bar in [self.footer_progress, self.activity_progress]:
-            bar.setRange(0, 0)
-
-    def _progress_busy_off(self):
-        for bar in [self.footer_progress, self.activity_progress]:
-            bar.setRange(0, 100)
-
-    def _begin_task(self, kind: str, label: str, cancellable: bool = True):
-        self.current_task_kind = kind
-        self.current_task_label = label
-        self.cancel_event = threading.Event()
-        self.job_started_at = time.time()
-        self.start_btn.setEnabled(False)
-        if hasattr(self, "home_start_btn"):
-            self.home_start_btn.setEnabled(False)
-        self.cancel_btn.setEnabled(cancellable)
-        if hasattr(self, "download_model_btn"):
-            self.download_model_btn.setEnabled(False)
-        self.job_clock_timer.start()
-        self._set_status(label)
-        self._refresh_job_clock()
-
-    def _finish_task(self, clear_transfer: bool = False):
-        self.current_task_kind = ""
-        self.current_task_label = ""
-        self.cancel_event = None
-        self.worker_thread = None
-        self.start_btn.setEnabled(True)
-        if hasattr(self, "home_start_btn"):
-            self.home_start_btn.setEnabled(bool(self.input_files))
-        self.cancel_btn.setEnabled(False)
-        if hasattr(self, "download_model_btn"):
-            self.download_model_btn.setEnabled(True)
-        self.job_clock_timer.stop()
-        if clear_transfer:
-            self.footer_transfer_label.setText("")
-            self.footer_meta_label.setText("")
-            if hasattr(self, "activity_job_meta_label"):
-                self.activity_job_meta_label.setText("")
-        self._progress_busy_off()
-
-    def _refresh_job_clock(self):
-        if not self.job_started_at:
-            self.activity_job_meta_label.setText("")
-            return
-        elapsed = time.time() - self.job_started_at
-        elapsed_text = format_elapsed_text(elapsed)
-        if 0 < self.current_progress_percent < 100:
-            estimated_total = elapsed * (100.0 / max(self.current_progress_percent, 1.0))
-            remaining = max(0.0, estimated_total - elapsed)
-            meta = f"경과 {elapsed_text} · 예상 잔여 {format_elapsed_text(remaining)}"
-        else:
-            meta = f"경과 {elapsed_text}"
-        self.activity_job_meta_label.setText(meta)
-        self.footer_meta_label.setText(meta)
-
-    def _notify_task_busy(self, task_name: str):
-        QMessageBox.information(self, "작업 진행 중", f"이미 다른 작업이 진행 중입니다.\n현재 요청: {task_name}")
-
-    def _cancel_current_task(self):
-        if self.cancel_event is not None:
-            self.cancel_event.set()
-            self._append_log("취소 요청을 전달했습니다.")
-            self._set_status("취소 요청을 처리하는 중입니다...")
-
-    # -------------------------------------------------
-    # Resource / model state / startup
-    # -------------------------------------------------
-    def _update_status_tile(self, key: str, level: str, summary: str, meta: str):
-        tile = self.status_tiles.get(key)
-        if not tile:
-            return
-        self._set_badge(tile["badge"], level, level.upper())
-        tile["summary"].setText(summary)
-        tile["meta"].setText(meta)
-
-    def _refresh_model_state_local(self):
-        try:
-            info = inspect_model_availability(self.current_model_id(), include_remote_meta=False)
-            self._apply_model_availability(info)
-        except Exception as exc:
-            self.model_status_summary_label.setText(f"모델 상태 확인 실패: {exc}")
-            self.model_cache_path_label.setText("")
-            self._set_badge(self.model_state_badge, "warning", "확인 실패")
-
-    def _apply_model_availability(self, info: dict):
-        if info.get("is_cached"):
-            self._set_badge(self.model_state_badge, "success", "로컬 준비됨")
-            summary = f"{info.get('label', self.current_model_id())} 모델이 이미 로컬 캐시에 있습니다."
-            tile_level = "success"
-        else:
-            self._set_badge(self.model_state_badge, "warning", "다운로드 필요")
-            summary = f"{info.get('label', self.current_model_id())} 모델이 아직 로컬에 없습니다."
-            tile_level = "warning"
-        self.model_status_summary_label.setText(summary)
-        self.model_cache_path_label.setText(info.get("cached_path_display") or "아직 캐시가 없습니다.")
-        self._update_status_tile("model", tile_level, info.get("label", self.current_model_id()), summary)
-
-    def _update_live_resource_ui(self, payload: dict):
-        level = payload.get("level", "neutral")
-        self._set_badge(self.resource_badge_label, level, payload.get("pressure_label", "정보 없음"))
-        summary = (
-            f"앱 CPU {payload.get('app_cpu_text', '정보 없음')} · 앱 RAM {payload.get('app_ram_text', '정보 없음')} · "
-            f"시스템 RAM {payload.get('ram_text', '정보 없음')} · GPU {payload.get('gpu_name', '감지되지 않음')}"
-        )
-        meta = (
-            f"시스템 CPU {payload.get('system_cpu_text', '정보 없음')} · VRAM {payload.get('vram_text', '정보 없음')} · "
-            f"마지막 갱신 {payload.get('timestamp_text', '--:--:--')}"
-        )
-        self.resource_summary_label.setText(summary)
-        self.resource_meta_label.setText(meta)
-
-    def refresh_live_resource_now(self):
-        if self.worker_thread and self.worker_thread.is_alive() and self.current_task_kind == "model_download":
-            return
-        try:
-            payload = collect_live_resource_status()
-            self.live_resource_data = payload
-            self._update_live_resource_ui(payload)
-        except Exception as exc:
-            self.resource_summary_label.setText(f"실시간 자원 상태 갱신 실패: {exc}")
-
-    def start_system_check(self):
-        if self.worker_thread and self.worker_thread.is_alive():
-            self._notify_task_busy("시스템 점검")
-            return
-
-        scan_settings = dict(self.settings)
-        scan_settings["language"] = self.current_lang_code()
-        scan_settings["model_id"] = self.current_model_id()
-        scan_settings["preset_id"] = self.current_preset_id()
-        scan_settings["preferred_device"] = self.current_preferred_device()
-
-        self._set_status("시스템 상태를 점검하는 중입니다...")
-        self._set_transfer_texts(
-            f"시스템 점검 · 모델 {self.current_model_id()} · 장치 선호 {self.current_preferred_device().upper()}",
-            "환경, 엔진, 장치, 실행 조합을 한 번에 점검합니다.",
-        )
-        self._begin_task("system_check", "시스템 점검", cancellable=False)
-        self.worker_thread = threading.Thread(target=self._worker_system_check, args=(scan_settings,), daemon=True)
-        self.worker_thread.start()
-
-    def _worker_system_check(self, scan_settings: dict):
-        def log(msg: str):
-            self.msg_queue.put(("log", msg))
-
-        try:
-            info = collect_startup_status(scan_settings)
-            self.msg_queue.put(("startup_info", info))
-
-            model_id = scan_settings.get("model_id") or self.current_model_id()
-            pref = scan_settings.get("preferred_device") or self.current_preferred_device()
-            availability = inspect_model_availability(model_id, include_remote_meta=False)
-
-            if availability.get("is_cached"):
-                self.msg_queue.put(("status", "실행 가능한 장치 조합을 점검하는 중입니다..."))
-                chosen = choose_runtime_device_and_type(model_id=model_id, preferred_device=pref, log=log)
-                self.msg_queue.put(("runtime_choice", chosen))
-            else:
-                self.msg_queue.put(("runtime_choice_text", "선택 모델이 아직 로컬에 없어 실제 로딩 검증은 건너뛰었습니다. 모델 다운로드 후 전사 시작 시 자동 판정됩니다."))
-
-            self.msg_queue.put(("status", "시스템 상태 점검이 완료되었습니다."))
-        except Exception as exc:
-            tb = traceback.format_exc()
-            self.msg_queue.put(("log", f"시스템 상태 점검 실패\n{exc}\n{tb}"))
-            self.msg_queue.put(("status", "시스템 상태 점검에 실패했습니다."))
-        finally:
-            self.msg_queue.put(("task_finished", "system_check"))
-
-    def _apply_startup_info(self, info: dict):
-        self.status_details = dict(info.get("details", {}))
-        self.base_status_details = dict(info.get("details", {}))
-        if info.get("live_resources"):
-            self._update_live_resource_ui(info["live_resources"])
-        for key in ["model", "engine", "torch", "device", "runtime"]:
-            item = info.get(key, {})
-            self._update_status_tile(key, item.get("level", "neutral"), item.get("summary", ""), item.get("meta", ""))
-
-    def _apply_runtime_choice_cards(self, choice: dict):
-        summary = f"{choice.get('device', '?')} / {choice.get('compute_type', '?')}"
-        meta = choice.get("reason", "실행 조합 검증 성공")
-        self._update_status_tile("runtime", "success", summary, meta)
-
-    # -------------------------------------------------
-    # Model download / confirmation
-    # -------------------------------------------------
-    def _request_model_download_permission(self, info: dict, reason: str) -> bool:
-        ticket = {"info": info, "reason": reason, "approved": False, "event": threading.Event()}
-        self.msg_queue.put(("ask_model_download", ticket))
-        ticket["event"].wait()
-        return bool(ticket.get("approved"))
-
-    def _show_model_download_dialog(self, info: dict, reason: str) -> bool:
-        dialog = ModelDownloadDialog(info, reason, self)
-        return dialog.exec() == QDialog.DialogCode.Accepted
-
-    def _ensure_model_ready(self, model_id: str, reason: str, log) -> dict:
-        info = inspect_model_availability(model_id, include_remote_meta=True)
-        self.msg_queue.put(("model_availability", info))
-        if info.get("is_cached"):
-            return info
-        approved = self._request_model_download_permission(info, reason)
-        if not approved:
-            raise RuntimeError("MODEL_DOWNLOAD_CANCELLED")
-        return info
-
-    def start_model_download(self):
-        if self.worker_thread and self.worker_thread.is_alive():
-            self._notify_task_busy("모델 다운로드")
-            return
-
-        model_id = self.current_model_id()
-        self._set_status(f"모델 준비 상태를 확인하는 중입니다... ({model_id})")
-        self._set_progress_value(0)
-        self._set_transfer_texts(f"모델 다운로드 · {model_id}", "다운로드 준비를 마치는 중입니다.")
-        self._begin_task("model_download", "모델 다운로드", cancellable=True)
-        self.worker_thread = threading.Thread(target=self._worker_model_download, args=(model_id,), daemon=True)
-        self.worker_thread.start()
-
-    def _worker_model_download(self, model_id: str):
-        def log(msg: str):
-            self.msg_queue.put(("log", msg))
-
-        def download_progress(payload: dict):
-            self.msg_queue.put(("download_progress", payload))
-
-        try:
-            info = self._ensure_model_ready(
-                model_id,
-                "이 모델이 로컬에 없습니다. 다운로드 후 해당 모델을 사용하여 전사를 시작할 수 있습니다.",
-                log,
-            )
-            if info.get("is_cached"):
-                self.msg_queue.put(("progress", 100))
-                self.msg_queue.put(("status", f"모델이 이미 준비되어 있습니다: {info['label']}"))
-                self.msg_queue.put(("log", f"모델 준비 완료 상태: {info['label']}"))
-                return
-
-            self.msg_queue.put(("status", f"모델 다운로드를 시작합니다. ({info['label']})"))
-            finished = download_model_to_cache(
-                model_id,
-                log=log,
-                progress=download_progress,
-                measured_mbps=self.last_measured_speed_mbps if self.last_measured_repo_id == info.get("repo_id", "") else None,
-                cancel_event=self.cancel_event,
-            )
-            self.msg_queue.put(("model_availability", finished))
-            self.msg_queue.put(("progress", 100))
-            self.msg_queue.put(("status", f"모델 다운로드가 완료되었습니다: {info['label']}"))
-            self.msg_queue.put(("log", f"모델 다운로드 완료: {info['label']}"))
-        except Exception as exc:
-            if str(exc) == "MODEL_DOWNLOAD_CANCELLED":
-                self.msg_queue.put(("cancelled", "모델 다운로드를 취소했습니다."))
-                return
-            tb = traceback.format_exc()
-            self.msg_queue.put(("log", f"모델 다운로드 실패\n{exc}\n{tb}"))
-            self.msg_queue.put(("status", "모델 다운로드에 실패했습니다."))
-        finally:
-            self.msg_queue.put(("task_finished", "model_download"))
-
-    # -------------------------------------------------
-    # Transcription
-    # -------------------------------------------------
-    def start_transcription(self):
-        if self.worker_thread and self.worker_thread.is_alive():
-            self._notify_task_busy("전사 작업")
-            return
-
-        input_paths = [path for path in self.input_files if os.path.isfile(path)]
-        if not input_paths:
-            QMessageBox.critical(self, "입력 파일 오류", "유효한 입력 파일을 하나 이상 선택하십시오.")
-            return
-
-        model_id = self.current_model_id()
-        lang_code = self.current_lang_code()
-        preset_id = self.current_preset_id()
-        pref = self.current_preferred_device()
-        audio_level = self.current_audio_enhance_level()
-        output_formats = self.current_output_formats()
-
-        self.output_path = None
-        self.output_paths = {}
-        self.batch_results = []
-        self._set_progress_value(0)
-        self.open_result_btn.setEnabled(False)
-        self.open_folder_btn.setEnabled(False)
-        self._begin_task("transcription", "전사 작업", cancellable=True)
-        self._set_transfer_texts("전사 준비 중", "모델 준비를 마치고 실행 장치를 결정하는 중입니다.")
-        self._set_status("실행 준비 중입니다...")
-        self._append_log("=" * 72)
-        self._append_log(f"작업 시작 | files={len(input_paths)}")
-        self._append_log(
-            f"실행 설정 | lang={lang_code}, preset={preset_id}, model={model_id}, preferred_device={pref}, audio_enhance={audio_level}, outputs={output_formats}"
-        )
-
-        self.worker_thread = threading.Thread(
-            target=self._worker_transcription,
-            args=(input_paths, lang_code, model_id, preset_id, pref, audio_level, output_formats),
-            daemon=True,
-        )
-        self.worker_thread.start()
-
-    def _worker_transcription(self, input_paths: list[str], lang_code: str, model_id: str, preset_id: str, pref: str, audio_level: str, output_formats: list[str]):
-        def log(msg: str):
-            self.msg_queue.put(("log", msg))
-
-        try:
-            self.msg_queue.put(("progress", 2))
-
-            info = self._ensure_model_ready(
-                model_id,
-                "전사를 시작하기 위해 선택된 모델을 다운로드합니다. 다운로드가 끝나면 이어서 전사를 시작합니다.",
-                log,
-            )
-            if not info.get("is_cached"):
-                self.msg_queue.put(("status", f"선택 모델을 다운로드하는 중입니다... ({info['label']})"))
-                download_model_to_cache(
+                final_info = download_model_to_cache(
                     model_id,
-                    log=log,
-                    progress=lambda payload: self.msg_queue.put(("download_progress", payload)),
-                    measured_mbps=self.last_measured_speed_mbps if self.last_measured_repo_id == info.get("repo_id", "") else None,
-                    cancel_event=self.cancel_event,
-                )
-                self.msg_queue.put(("model_availability", inspect_model_availability(model_id, include_remote_meta=False)))
-                self.msg_queue.put(("progress", 10))
-
-            self.msg_queue.put(("status", "실행 장치를 결정하는 중입니다..."))
-            chosen = choose_runtime_device_and_type(model_id=model_id, preferred_device=pref, log=log)
-            if self.cancel_event is not None and self.cancel_event.is_set():
-                raise RuntimeError("TRANSCRIPTION_CANCELLED")
-
-            self.msg_queue.put(("progress", 12))
-            self.msg_queue.put(("runtime_choice", chosen))
-            self.msg_queue.put(("status", f"전사를 시작합니다... ({chosen['device']} / {chosen['compute_type']})"))
-            self.msg_queue.put(("log", f"전사 실행 조합 확정: {chosen['device']} / {chosen['compute_type']}"))
-
-            batch_results = []
-            total = len(input_paths)
-            for idx, in_path in enumerate(input_paths, start=1):
-                if self.cancel_event is not None and self.cancel_event.is_set():
-                    raise RuntimeError("TRANSCRIPTION_CANCELLED")
-                self.msg_queue.put(("status", f"전사 중... ({idx}/{total}) {os.path.basename(in_path)}"))
-                self.msg_queue.put(("batch_item_start", {"index": idx, "total": total, "path": in_path}))
-
-                def progress(local_percent: float, index=idx):
-                    base = 12.0
-                    span = 88.0 / max(total, 1)
-                    overall = base + ((index - 1) * span) + (max(0.0, min(100.0, float(local_percent))) / 100.0) * span
-                    self.msg_queue.put(("progress", overall))
-
-                result = run_transcription_job(
-                    in_path=in_path,
-                    lang_code=lang_code,
-                    model_id=chosen["load_id"],
-                    device=chosen["device"],
-                    compute_type=chosen["compute_type"],
-                    log=log,
+                    log=lambda msg: self._thread_log(msg),
                     progress=progress,
-                    preset_id=preset_id,
-                    audio_enhance_level=audio_level,
-                    output_formats=output_formats,
                     cancel_event=self.cancel_event,
                 )
-                batch_item = {
-                    "index": idx,
-                    "total": total,
-                    "input_path": in_path,
-                    "primary_path": result["primary_path"],
-                    "saved_paths": result["saved_paths"],
-                    "effective_lang": result.get("effective_lang", lang_code),
-                    "preprocess_info": result.get("preprocess_info"),
-                }
-                batch_results.append(batch_item)
-                self.msg_queue.put(("batch_item_done", batch_item))
+                self._thread_log(f"모델 다운로드 완료: {final_info.get('label', model_label)}", "success")
+                self._ui(lambda: self._set_status("모델 준비 완료", final_info.get("label", model_label), "success"))
+                self._ui(lambda: self._set_progress(100.0))
+            except RuntimeError as exc:
+                if str(exc) == "MODEL_DOWNLOAD_CANCELLED":
+                    self._thread_log("모델 다운로드가 중단되었습니다.", "warning")
+                    self._ui(lambda: self._set_status("다운로드 중단", "부분 파일은 정리되었습니다.", "warning"))
+                else:
+                    self._thread_log(f"모델 다운로드 실패: {exc}", "danger")
+                    self._ui(lambda: self._set_status("다운로드 실패", str(exc), "danger"))
+            except Exception as exc:
+                self._thread_log(f"모델 다운로드 실패: {exc}", "danger")
+                self._thread_log(traceback.format_exc(), "danger")
+                self._ui(lambda: self._set_status("다운로드 실패", str(exc), "danger"))
+            finally:
+                self._ui(lambda: self._set_busy(False))
+                self._ui(lambda: self.run_environment_probe(background=True))
 
-            self.msg_queue.put(("done", {"results": batch_results, "chosen": chosen, "model_id": model_id, "lang_code": lang_code, "preset_id": preset_id, "pref": pref}))
-        except Exception as exc:
-            self.msg_queue.put(("busy_off", None))
-            if str(exc) == "MODEL_DOWNLOAD_CANCELLED":
-                self.msg_queue.put(("cancelled", "전사를 시작하지 않았습니다. 모델 다운로드가 취소되었습니다."))
-                return
-            if str(exc) == "TRANSCRIPTION_CANCELLED":
-                self.msg_queue.put(("cancelled", "전사를 취소했습니다."))
-                return
-            tb = traceback.format_exc()
-            self.msg_queue.put(("error", f"{exc}\n\n{tb}"))
+        self.worker_thread = threading.Thread(target=worker, daemon=True)
+        self.worker_thread.start()
 
-    # -------------------------------------------------
-    # Result open
-    # -------------------------------------------------
-    def open_result(self):
-        if self.output_path and os.path.isfile(self.output_path):
-            open_path(self.output_path)
+    # ------------------------------------------------------------------
+    # Transcription
+    # ------------------------------------------------------------------
+    def start_transcription(self) -> None:
+        if self.busy:
+            return
+        if not self.files:
+            messagebox.showinfo("입력 파일 없음", "전사할 영상 또는 음성 파일을 먼저 추가하십시오.")
+            return
 
-    def open_result_folder(self):
-        if self.output_path:
-            folder = os.path.dirname(self.output_path)
-            if os.path.isdir(folder):
-                open_path(folder)
+        settings = self._collect_current_settings()
+        save_settings(settings)
+        self.settings = settings
 
-    # -------------------------------------------------
-    # Queue polling
-    # -------------------------------------------------
-    def _update_download_transfer_ui(self, payload: dict):
-        percent = float(payload.get("percent") or 0.0)
-        self._set_progress_value(percent)
-        self._set_transfer_texts(
-            f"다운로드 {percent:.0f}% · {payload.get('downloaded_text', '')} / {payload.get('total_text', '')}",
-            payload.get("message", ""),
-        )
+        self.cancel_event.clear()
+        self.last_saved_paths.clear()
+        self._set_busy(True)
+        self.start_time = time.time()
+        self._refresh_elapsed()
+        self._set_progress(0.0)
+        self._set_status("전사 준비", "장치와 모델 조합을 확인하고 있습니다.", "neutral")
+        self._log("전사 작업 시작", "accent")
 
-    def _poll_queue(self):
-        try:
-            while True:
-                kind, payload = self.msg_queue.get_nowait()
+        files_snapshot = list(self.files)
 
-                if kind == "log":
-                    self._append_log(payload)
+        def worker() -> None:
+            try:
+                model_id = settings["model_id"]
+                preferred_device = settings["preferred_device"]
+                lang_code = settings["language"]
+                preset_id = settings["preset_id"]
+                audio_level = settings["audio_enhance_level"]
+                output_formats = settings["output_formats"]
 
-                elif kind == "progress":
-                    try:
-                        percent = max(0.0, min(100.0, float(payload)))
-                        self._set_progress_value(percent)
-                        if self.current_task_kind == "transcription":
-                            self.footer_meta_label.setText(f"전사 진행률 {percent:.0f}%")
-                            self._refresh_job_clock()
-                    except Exception:
-                        pass
+                model_label = get_model_entry(model_id)["label"]
+                self._thread_log(f"선택 모델: {model_label}")
+                self._thread_log(f"선호 장치: {preferred_device}")
 
-                elif kind == "busy_on":
-                    self._progress_busy_on()
+                self._ui(lambda: self._set_status("장치 검증", "모델 로딩 가능한 device/compute_type 조합 확인 중", "neutral"))
+                runtime = choose_runtime_device_and_type(
+                    model_id=model_id,
+                    preferred_device=preferred_device,
+                    log=lambda msg: self._thread_log(msg),
+                )
+                device = runtime["device"]
+                compute_type = runtime["compute_type"]
+                load_id = runtime.get("load_id") or get_model_entry(model_id)["load_id"]
 
-                elif kind == "busy_off":
-                    self._progress_busy_off()
+                self.settings["last_good_device"] = device
+                self.settings["last_good_compute_type"] = compute_type
+                save_settings(self.settings)
 
-                elif kind == "status":
-                    self._set_status(payload)
+                self._thread_log(f"실행 조합 확정: {device} / {compute_type}", "success")
+                total = len(files_snapshot)
 
-                elif kind == "startup_info":
-                    self._apply_startup_info(payload)
-                    self._set_status("시스템 상태 점검이 완료되었습니다.")
+                for idx, in_path in enumerate(files_snapshot):
+                    if self.cancel_event.is_set():
+                        raise RuntimeError("TRANSCRIPTION_CANCELLED")
 
-                elif kind == "model_availability":
-                    self._apply_model_availability(payload)
+                    basename = os.path.basename(in_path)
+                    self._thread_log(f"[{idx + 1}/{total}] 작업 시작: {basename}", "accent")
+                    self._ui(lambda idx=idx, total=total, basename=basename: self._set_status(
+                        "전사 중",
+                        f"{idx + 1}/{total} · {basename}",
+                        "neutral",
+                    ))
 
-                elif kind == "ask_model_download":
-                    payload["approved"] = self._show_model_download_dialog(payload["info"], payload["reason"])
-                    payload["event"].set()
+                    def progress(pct: float, idx: int = idx, total: int = total) -> None:
+                        overall = ((idx + max(0.0, min(100.0, float(pct))) / 100.0) / total) * 100.0
+                        self._ui(lambda overall=overall: self._set_progress(overall))
 
-                elif kind == "download_progress":
-                    self._update_download_transfer_ui(payload)
-                    self._refresh_job_clock()
-
-                elif kind == "runtime_choice":
-                    self._apply_runtime_choice_cards(payload)
-                    if self.current_task_kind == "transcription":
-                        self._set_transfer_texts(
-                            f"전사 실행 조합 · {payload.get('device')} / {payload.get('compute_type')}",
-                            "실행 조합 검증 완료, 첫 파일 전사를 준비하는 중입니다.",
-                        )
-
-                elif kind == "runtime_choice_text":
-                    self._update_status_tile("runtime", "warning", payload, "자동 fallback이 필요할 수 있습니다.")
-
-                elif kind == "task_finished":
-                    if payload in {"model_download", "system_check"}:
-                        self._finish_task(clear_transfer=False)
-
-                elif kind == "batch_item_start":
-                    self._append_log(f"[{payload['index']}/{payload['total']}] 처리 시작: {payload['path']}")
-                    self._set_transfer_texts(
-                        f"배치 {payload['index']}/{payload['total']} · {os.path.basename(payload['path'])}",
-                        "현재 파일을 전사하는 중입니다.",
+                    result = run_transcription_job(
+                        in_path=in_path,
+                        lang_code=lang_code,
+                        model_id=load_id,
+                        device=device,
+                        compute_type=compute_type,
+                        log=lambda msg: self._thread_log(msg),
+                        progress=progress,
+                        preset_id=preset_id,
+                        audio_enhance_level=audio_level,
+                        output_formats=output_formats,
+                        cancel_event=self.cancel_event,
                     )
 
-                elif kind == "batch_item_done":
-                    preprocess_info = payload.get("preprocess_info")
-                    preprocess_summary = self._format_preprocess_summary(preprocess_info)
-                    if preprocess_summary:
-                        self._append_log(f"[{payload['index']}/{payload['total']}] {preprocess_summary}")
-                    saved = ", ".join(f"{fmt.upper()}={path}" for fmt, path in payload.get("saved_paths", {}).items())
-                    self._append_log(f"[{payload['index']}/{payload['total']}] 저장 완료: {saved}")
-                    self._update_preprocess_status(preprocess_info, payload.get("input_path"))
-                    self.output_path = payload.get("primary_path")
-                    self.output_paths = dict(payload.get("saved_paths", {}))
-                    self.open_result_btn.setEnabled(True)
-                    self.open_folder_btn.setEnabled(True)
+                    saved_paths = result.get("saved_paths", {})
+                    for path in saved_paths.values():
+                        if path:
+                            self.last_saved_paths.append(path)
+                    saved_text = ", ".join(f"{fmt.upper()}={path}" for fmt, path in saved_paths.items())
+                    self._thread_log(f"[{idx + 1}/{total}] 저장 완료: {saved_text}", "success")
 
-                elif kind == "done":
-                    results = payload.get("results", [])
-                    chosen = payload.get("chosen", {})
-                    model_id = payload.get("model_id", self.current_model_id())
-                    lang_code = payload.get("lang_code", self.current_lang_code())
-                    preset_id = payload.get("preset_id", self.current_preset_id())
-                    pref = payload.get("pref", self.current_preferred_device())
-                    self.batch_results = list(results)
-                    if results:
-                        self.output_path = results[-1].get("primary_path")
-                        self.output_paths = dict(results[-1].get("saved_paths", {}))
-                    self._set_progress_value(100)
-                    self._set_status("작업이 완료되었습니다.")
-                    self.open_result_btn.setEnabled(True)
-                    self.open_folder_btn.setEnabled(True)
-                    self._append_log(f"총 {len(results)}개 파일 처리 완료")
-                    self._set_transfer_texts(f"전사 완료 · 총 {len(results)}개 파일", "전사와 저장이 완료되었습니다.")
+                self._ui(lambda: self._set_progress(100.0))
+                self._ui(lambda: self._set_status("작업 완료", f"{total}개 파일 처리 완료", "success"))
+                self._thread_log("전체 전사 작업 완료", "success")
+            except RuntimeError as exc:
+                if str(exc) == "TRANSCRIPTION_CANCELLED":
+                    self._thread_log("전사 작업이 중단되었습니다.", "warning")
+                    self._ui(lambda: self._set_status("작업 중단", "사용자 요청으로 중단됨", "warning"))
+                else:
+                    self._thread_log(f"전사 실패: {exc}", "danger")
+                    self._ui(lambda: self._set_status("전사 실패", str(exc), "danger"))
+            except Exception as exc:
+                self._thread_log(f"전사 실패: {exc}", "danger")
+                self._thread_log(traceback.format_exc(), "danger")
+                self._ui(lambda: self._set_status("전사 실패", str(exc), "danger"))
+            finally:
+                self._ui(lambda: self._set_busy(False))
+                self._ui(lambda: self.run_environment_probe(background=True))
 
-                    self.settings["model_id"] = model_id
-                    self.settings["language"] = lang_code
-                    self.settings["preset_id"] = preset_id
-                    self.settings["preferred_device"] = pref
-                    self.settings["audio_enhance_level"] = self.current_audio_enhance_level()
-                    self.settings["output_formats"] = self.current_output_formats()
-                    self.settings["last_good_device"] = chosen.get("device", "")
-                    self.settings["last_good_compute_type"] = chosen.get("compute_type", "")
-                    save_settings(self.settings)
-                    self._refresh_model_state_local()
-                    self._finish_task(clear_transfer=False)
-                    try:
-                        clear_temp_work_dir(remove_root=False)
-                    except Exception:
-                        pass
+        self.worker_thread = threading.Thread(target=worker, daemon=True)
+        self.worker_thread.start()
 
-                elif kind == "cancelled":
-                    self._set_status(payload)
-                    self._set_transfer_texts("작업 취소", payload)
-                    self._append_log(payload)
-                    self._finish_task(clear_transfer=False)
-                    try:
-                        clear_temp_work_dir(remove_root=False)
-                    except Exception:
-                        pass
+    def cancel_current_task(self) -> None:
+        if not self.busy:
+            return
+        self.cancel_event.set()
+        self._set_status("중단 요청", "현재 단계가 정리되면 멈춥니다.", "warning")
+        self._log("중단 요청을 보냈습니다.", "warning")
+        self.cancel_button.configure(state="disabled")
 
-                elif kind == "error":
-                    self._set_status("오류가 발생했습니다.")
-                    self._set_transfer_texts("작업 오류", "오류가 발생했습니다. 자세한 내용은 로그를 확인하십시오.")
-                    self._append_log(payload)
-                    self._finish_task(clear_transfer=False)
-                    try:
-                        clear_temp_work_dir(remove_root=False)
-                    except Exception:
-                        pass
-                    QMessageBox.critical(self, "오류", payload)
+    # ------------------------------------------------------------------
+    # Buttons / state
+    # ------------------------------------------------------------------
+    def _set_busy(self, busy: bool) -> None:
+        self.busy = busy
+        if not busy:
+            self.start_time = None
+        self._update_buttons_state()
 
-        except queue.Empty:
+    def _update_buttons_state(self) -> None:
+        state_normal = "disabled" if self.busy else "normal"
+        state_start = "normal" if (not self.busy and len(self.files) > 0) else "disabled"
+        state_cancel = "normal" if self.busy and not self.cancel_event.is_set() else "disabled"
+
+        for button in (
+            self.add_files_button,
+            self.add_folder_button,
+            self.remove_file_button,
+            self.clear_files_button,
+            self.move_up_button,
+            self.move_down_button,
+            self.download_button,
+            self.check_button,
+        ):
+            try:
+                button.configure(state=state_normal)
+            except Exception:
+                pass
+
+        self.start_button.configure(state=state_start)
+        self.cancel_button.configure(state=state_cancel)
+
+    def open_last_output_folder(self) -> None:
+        paths = [p for p in self.last_saved_paths if p and os.path.isfile(p)]
+        if not paths:
+            messagebox.showinfo("최근 저장 경로 없음", "아직 저장된 출력 파일이 없습니다.")
+            return
+        folder = os.path.dirname(paths[-1])
+        try:
+            os.startfile(folder)  # type: ignore[attr-defined]
+        except Exception:
+            messagebox.showinfo("저장 폴더", folder)
+
+    def _on_close(self) -> None:
+        if self.busy:
+            if not messagebox.askyesno("작업 진행 중", "진행 중인 작업을 중단하고 종료하시겠습니까?"):
+                return
+            self.cancel_event.set()
+        try:
+            save_settings(self._collect_current_settings())
+        except Exception:
             pass
+        self.destroy()
+
+
+if __name__ == "__main__":
+    app = SubtitleGUI()
+    app.mainloop()
