@@ -9,7 +9,7 @@ import time
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFrame,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -34,6 +35,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSizeGrip,
+    QSplitter,
     QDoubleSpinBox,
     QSpinBox,
     QVBoxLayout,
@@ -266,6 +269,7 @@ class SystemDetailsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(820, 640)
+        self._sections = sections
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
@@ -277,28 +281,43 @@ class SystemDetailsDialog(QDialog):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        body = QWidget()
-        scroll.setWidget(body)
-        body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(10)
-
-        if isinstance(sections, str):
-            text = QPlainTextEdit()
-            text.setReadOnly(True)
-            text.setPlainText(sections)
-            body_layout.addWidget(text)
-        else:
-            for section in sections:
-                body_layout.addWidget(self._section_card(section.get("title", ""), section.get("rows", [])))
-            body_layout.addStretch(1)
+        self.body = QWidget()
+        scroll.setWidget(self.body)
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(10)
+        self._render_sections(sections)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        self.refresh_button = buttons.addButton("갱신", QDialogButtonBox.ButtonRole.ActionRole)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
         buttons.rejected.connect(self.reject)
 
         layout.addWidget(scroll, 1)
         layout.addWidget(buttons)
+
+    def _clear_body(self):
+        while self.body_layout.count():
+            item = self.body_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _render_sections(self, sections: list[dict] | str):
+        self._clear_body()
+        self._sections = sections
+        if isinstance(sections, str):
+            text = QPlainTextEdit()
+            text.setReadOnly(True)
+            text.setPlainText(sections)
+            self.body_layout.addWidget(text)
+        else:
+            for section in sections:
+                self.body_layout.addWidget(self._section_card(section.get("title", ""), section.get("rows", [])))
+            self.body_layout.addStretch(1)
+
+    def update_sections(self, sections: list[dict] | str):
+        self._render_sections(sections)
 
     def _section_card(self, title: str, rows: list[tuple[str, str]]) -> QWidget:
         card = QFrame()
@@ -341,14 +360,21 @@ class SubtitleGUI(QMainWindow):
         self.status_details = {}
         self.base_status_details = {}
         self.live_resource_data = {}
+        self.system_details_dialog = None
         self.last_measured_speed_mbps = None
         self.last_measured_repo_id = ""
+        self.resource_easter_clicks = 0
+        self.easter_egg_label = None
+        self.easter_opacity_effect = None
+        self.easter_fade_animation = None
+        self.easter_hide_timer = None
         self.cancel_event = None
         self.current_task_kind = ""
         self.current_task_label = ""
         self.current_progress_percent = 0.0
         self.job_started_at = None
         self.download_progress_dialog = None
+        self.resize_grip = None
         self.loaded_font_families = []
         self._loading_settings = False
 
@@ -356,6 +382,7 @@ class SubtitleGUI(QMainWindow):
         self.resize(1360, 860)
         self.setMinimumSize(1180, 760)
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         icon_path = bundled_icon_path()
         if icon_path and os.path.isfile(icon_path):
@@ -368,6 +395,10 @@ class SubtitleGUI(QMainWindow):
         self._init_fonts()
         self._build_ui()
         self._apply_styles()
+        self.resize_grip = QSizeGrip(self)
+        self.resize_grip.setFixedSize(22, 22)
+        self.resize_grip.setStyleSheet("background: transparent;")
+        self.resize_grip.raise_()
         self._normalize_control_sizes()
         self._load_settings_into_ui()
         self._refresh_selection_hints()
@@ -396,6 +427,13 @@ class SubtitleGUI(QMainWindow):
         if self.cancel_event is not None:
             self.cancel_event.set()
         super().closeEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_easter_egg_toast()
+        if self.resize_grip is not None:
+            self.resize_grip.move(self.width() - self.resize_grip.width() - 6, self.height() - self.resize_grip.height() - 6)
+            self.resize_grip.raise_()
 
     def _init_fonts(self):
         db = QFontDatabase()
@@ -435,6 +473,13 @@ class SubtitleGUI(QMainWindow):
                 color: #eef3f7;
                 background: #20262d;
             }}
+            QMainWindow {{
+                background: transparent;
+            }}
+            QWidget#AppShell {{
+                background: #20262d;
+                border-radius: 16px;
+            }}
             QWidget#WindowBar {{
                 background: transparent;
             }}
@@ -449,11 +494,12 @@ class SubtitleGUI(QMainWindow):
             QLabel#AppSubtitle, QLabel#MutedText {{
                 color: #aebbc6;
                 font-size: 13px;
+                font-weight: 400;
             }}
             QLabel#SideLabel {{
                 color: #aebbc6;
                 font-size: 13px;
-                font-weight: 600;
+                font-weight: 500;
             }}
             QLabel#SideValue {{
                 color: #f7fafc;
@@ -476,7 +522,7 @@ class SubtitleGUI(QMainWindow):
             }}
             QLabel#SectionTitle {{
                 font-size: 18px;
-                font-weight: 700;
+                font-weight: 650;
                 color: #f7fafc;
             }}
             QLabel#DialogTitle {{
@@ -484,19 +530,40 @@ class SubtitleGUI(QMainWindow):
                 font-weight: 700;
             }}
             QLabel#StatusTitle {{
-                font-size: 20px;
-                font-weight: 700;
+                font-size: 18px;
+                font-weight: 650;
                 color: #f7fafc;
             }}
             QLabel#FormLabel {{
                 color: #d5dee7;
                 font-size: 14px;
-                font-weight: 700;
+                font-weight: 600;
             }}
             QLabel#ValueLabel {{
                 color: #f7fafc;
                 font-size: 15px;
+                font-weight: 600;
+            }}
+            QLabel#PresetHelpTitle {{
+                color: #e8eef3;
+                font-size: 14px;
                 font-weight: 700;
+            }}
+            QLabel#PresetSectionTitle {{
+                color: #f7fafc;
+                font-size: 16px;
+                font-weight: 800;
+                padding-top: 6px;
+                padding-bottom: 4px;
+            }}
+            QLabel#EasterEggBanner {{
+                color: #fff8d8;
+                background: #3a3447;
+                border: 1px solid #b6a35d;
+                border-radius: 6px;
+                padding: 8px 12px;
+                font-size: 13px;
+                font-weight: 600;
             }}
             QWidget#Transparent {{
                 background: transparent;
@@ -527,6 +594,15 @@ class SubtitleGUI(QMainWindow):
             QScrollArea, QScrollArea > QWidget > QWidget {{
                 background: transparent;
                 border: none;
+            }}
+            QSplitter {{
+                background: transparent;
+            }}
+            QSplitter::handle:vertical {{
+                background: #34414d;
+                height: 5px;
+                margin: 3px 120px;
+                border-radius: 2px;
             }}
             QComboBox {{
                 color: #f7fafc;
@@ -618,8 +694,34 @@ class SubtitleGUI(QMainWindow):
                 font-size: 14px;
             }}
             QPushButton#CompactButton {{
-                padding: 0px 10px;
-                min-height: 18px;
+                padding: 0px 12px;
+                min-height: 28px;
+            }}
+            QPushButton#ModelStateButton {{
+                padding: 0px 12px;
+                min-height: 28px;
+                border-radius: 6px;
+                font-weight: 700;
+            }}
+            QPushButton#ModelStateButton:disabled {{
+                color: #c9f0dc;
+                background: #213a32;
+                border: 1px solid #3e765d;
+            }}
+            QPushButton#DisclosureButton {{
+                color: #d5dee7;
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 6px;
+                padding: 7px 2px;
+                min-height: 28px;
+                font-weight: 800;
+                font-size: 14px;
+                text-align: left;
+            }}
+            QPushButton#DisclosureButton:hover {{
+                background: #26313a;
+                border-color: #40505d;
             }}
             QPushButton:hover {{
                 background: #303b45;
@@ -753,6 +855,7 @@ class SubtitleGUI(QMainWindow):
 
     def _build_ui(self):
         root_widget = QWidget()
+        root_widget.setObjectName("AppShell")
         self.setCentralWidget(root_widget)
 
         root = QVBoxLayout(root_widget)
@@ -791,7 +894,6 @@ class SubtitleGUI(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        root.addWidget(scroll, 1)
 
         content = QWidget()
         scroll.setWidget(content)
@@ -812,9 +914,25 @@ class SubtitleGUI(QMainWindow):
 
         grid.addWidget(self._build_input_card(), 0, 0)
         grid.addWidget(right_stack, 0, 1)
-        grid.addWidget(self._build_log_card(), 1, 0, 1, 2)
+        grid.setRowStretch(0, 1)
 
-        root.addWidget(self._build_bottom_bar())
+        main_splitter = QSplitter(Qt.Orientation.Vertical)
+        main_splitter.setObjectName("MainSplitter")
+        main_splitter.addWidget(scroll)
+        main_splitter.addWidget(self._build_log_card())
+        main_splitter.setCollapsible(0, False)
+        main_splitter.setCollapsible(1, False)
+        main_splitter.setStretchFactor(0, 1)
+        main_splitter.setStretchFactor(1, 0)
+        main_splitter.setSizes([640, 135])
+        root.addWidget(main_splitter, 1)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.setContentsMargins(0, 0, 0, 0)
+        bottom_row.setSpacing(8)
+        bottom_row.addWidget(self._build_bottom_bar(), 1)
+        root.addLayout(bottom_row)
+        self._build_easter_egg_toast(root_widget)
 
     def _normalize_control_sizes(self):
         for combo in [self.language_combo, self.model_combo, self.preset_combo]:
@@ -826,20 +944,22 @@ class SubtitleGUI(QMainWindow):
             btn.setMinimumSize(110, 40)
             btn.setMaximumHeight(40)
         if hasattr(self, "resource_refresh_btn"):
-            self.resource_refresh_btn.setMinimumSize(96, 34)
-            self.resource_refresh_btn.setMaximumHeight(34)
+            self.resource_refresh_btn.setMinimumSize(64, 36)
+            self.resource_refresh_btn.setMaximumHeight(38)
+            self.resource_refresh_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         if hasattr(self, "resource_state_btn"):
-            self.resource_state_btn.setMinimumSize(86, 34)
-            self.resource_state_btn.setMaximumHeight(34)
+            self.resource_state_btn.setMinimumSize(72, 36)
+            self.resource_state_btn.setMaximumHeight(38)
+            self.resource_state_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         if hasattr(self, "system_details_btn"):
-            self.system_details_btn.setMinimumSize(66, 34)
-            self.system_details_btn.setMaximumHeight(34)
+            self.system_details_btn.setMinimumSize(52, 38)
+            self.system_details_btn.setMaximumHeight(38)
 
     def _build_bottom_bar(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("BottomBar")
         layout = QGridLayout(bar)
-        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setContentsMargins(14, 10, 14, 10)
         layout.setHorizontalSpacing(14)
         layout.setVerticalSpacing(6)
         layout.setColumnStretch(0, 3)
@@ -859,38 +979,16 @@ class SubtitleGUI(QMainWindow):
         progress_box.setSpacing(4)
         self.footer_meta_label = QLabel("")
         self.footer_meta_label.setObjectName("MutedText")
-        self.footer_meta_label.setVisible(False)
+        self.footer_meta_label.setVisible(True)
         self.footer_progress = QProgressBar()
         self.footer_progress.setRange(0, 100)
         self.footer_progress.setValue(0)
         self.footer_progress.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.footer_progress.setFixedHeight(34)
+        self.footer_progress.setFixedHeight(40)
         self.activity_progress = self.footer_progress
+        progress_box.addWidget(self.footer_meta_label)
         progress_box.addWidget(self.footer_progress)
         layout.addLayout(progress_box, 0, 0, 1, 2)
-
-        resource_line = QWidget()
-        resource_row = QHBoxLayout(resource_line)
-        resource_row.setContentsMargins(0, 0, 0, 0)
-        resource_row.setSpacing(8)
-        self.cpu_meter = self._resource_meter("CPU")
-        self.ram_meter = self._resource_meter("RAM")
-        self.vram_meter = self._resource_meter("VRAM")
-        for meter in [self.cpu_meter, self.ram_meter, self.vram_meter]:
-            resource_row.addWidget(meter, 1)
-        self.resource_state_btn = self._make_button("상태 확인 중", self.show_system_details)
-        self.resource_state_btn.setObjectName("CompactButton")
-        self.resource_state_btn.setMinimumSize(86, 34)
-        self.resource_refresh_btn = self._make_button("자원 갱신", self.refresh_live_resource_now)
-        self.resource_refresh_btn.setObjectName("CompactButton")
-        self.resource_refresh_btn.setMinimumSize(96, 34)
-        self.system_details_btn = self._make_button("상세", self.show_system_details)
-        self.system_details_btn.setObjectName("CompactButton")
-        self.system_details_btn.setMinimumSize(66, 34)
-        resource_row.addWidget(self.resource_state_btn)
-        resource_row.addWidget(self.resource_refresh_btn)
-        resource_row.addWidget(self.system_details_btn)
-        layout.addWidget(resource_line, 1, 0, 1, 2)
 
         self.start_btn = self._make_button("전사 시작", self.start_transcription, primary=True)
         self.cancel_btn = self._make_button("취소", self._cancel_current_task, danger=True)
@@ -910,12 +1008,38 @@ class SubtitleGUI(QMainWindow):
             btn.setMinimumSize(110, 40)
             btn.setMaximumHeight(40)
             actions.addWidget(btn)
-        layout.addLayout(actions, 0, 2, 2, 1)
+        layout.addLayout(actions, 0, 2)
 
         self.activity_status_label = self.footer_status_label
         self.activity_status_meta_label = self.footer_transfer_label
         self.activity_job_meta_label = self.footer_meta_label
         return bar
+
+    def _build_easter_egg_toast(self, parent: QWidget):
+        self.easter_egg_label = QLabel(parent)
+        self.easter_egg_label.setObjectName("EasterEggBanner")
+        self.easter_egg_label.setWordWrap(True)
+        self.easter_egg_label.setVisible(False)
+        self.easter_egg_label.setMinimumHeight(42)
+        self.easter_opacity_effect = QGraphicsOpacityEffect(self.easter_egg_label)
+        self.easter_opacity_effect.setOpacity(0.0)
+        self.easter_egg_label.setGraphicsEffect(self.easter_opacity_effect)
+        self.easter_hide_timer = QTimer(self)
+        self.easter_hide_timer.setSingleShot(True)
+        self.easter_hide_timer.timeout.connect(self._hide_easter_egg_toast)
+
+    def _position_easter_egg_toast(self):
+        if not self.easter_egg_label:
+            return
+        parent = self.easter_egg_label.parentWidget()
+        if parent is None:
+            return
+        width = min(560, max(320, parent.width() - 64))
+        self.easter_egg_label.setFixedWidth(width)
+        self.easter_egg_label.adjustSize()
+        x = max(16, (parent.width() - self.easter_egg_label.width()) // 2)
+        y = max(16, parent.height() - self.easter_egg_label.height() - 112)
+        self.easter_egg_label.move(x, y)
 
     def _small_label(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -1002,11 +1126,11 @@ class SubtitleGUI(QMainWindow):
         output_layout.setContentsMargins(10, 7, 10, 7)
         output_layout.setHorizontalSpacing(8)
         output_layout.setVerticalSpacing(4)
-        self.use_source_folder_check = QCheckBox("원본 폴더에 저장")
+        self.use_source_folder_check = QCheckBox("원본 폴더 저장")
         self.use_source_folder_check.setChecked(True)
         self.use_source_folder_check.stateChanged.connect(self._on_output_folder_mode_changed)
         self.output_dir_edit = QLineEdit()
-        self.output_dir_edit.setPlaceholderText("출력 폴더를 따로 지정할 때만 사용")
+        self.output_dir_edit.setPlaceholderText("원본 폴더에 저장됨")
         self.output_dir_edit.setEnabled(False)
         self.output_dir_edit.textChanged.connect(self._on_output_dir_text_changed)
         self.output_dir_btn = self._make_button("폴더 선택", self.browse_output_dir)
@@ -1054,17 +1178,24 @@ class SubtitleGUI(QMainWindow):
         top_grid.addWidget(self.preset_combo, 1, 1)
         layout.addLayout(top_grid)
 
-        self.preset_detail_label = QLabel("")
-        self.preset_detail_label.setObjectName("MutedText")
-        self.preset_detail_label.setWordWrap(True)
-        layout.addWidget(self.preset_detail_label)
+        self.preset_disclosure_btn = self._make_button("▸ 프리셋 상세", self.toggle_preset_details)
+        self.preset_disclosure_btn.setObjectName("DisclosureButton")
+        self.preset_disclosure_btn.setCheckable(True)
+        layout.addWidget(self.preset_disclosure_btn)
 
         preset_controls = QFrame()
         preset_controls.setObjectName("InlinePanel")
         preset_grid = QGridLayout(preset_controls)
-        preset_grid.setContentsMargins(10, 8, 10, 8)
-        preset_grid.setHorizontalSpacing(8)
-        preset_grid.setVerticalSpacing(6)
+        preset_grid.setContentsMargins(10, 10, 10, 10)
+        preset_grid.setHorizontalSpacing(10)
+        preset_grid.setVerticalSpacing(7)
+        preset_intro_title = QLabel("설명")
+        preset_intro_title.setObjectName("PresetSectionTitle")
+        preset_grid.addWidget(preset_intro_title, 0, 0, 1, 4)
+        self.preset_detail_label = QLabel("")
+        self.preset_detail_label.setObjectName("MutedText")
+        self.preset_detail_label.setWordWrap(True)
+        preset_grid.addWidget(self.preset_detail_label, 1, 0, 1, 4)
         self.custom_beam_spin = QSpinBox()
         self.custom_beam_spin.setRange(1, 8)
         self.custom_vad_speech_spin = QSpinBox()
@@ -1077,19 +1208,54 @@ class SubtitleGUI(QMainWindow):
         self.custom_repetition_spin.setRange(1.0, 1.3)
         self.custom_repetition_spin.setSingleStep(0.01)
         self.custom_repetition_spin.setDecimals(2)
-        for col, (label_text, widget) in enumerate(
-            [
-                ("Beam", self.custom_beam_spin),
-                ("말소리", self.custom_vad_speech_spin),
-                ("무음", self.custom_vad_silence_spin),
-                ("반복 억제", self.custom_repetition_spin),
-            ]
-        ):
-            preset_grid.addWidget(self._small_label(label_text), 0, col)
-            preset_grid.addWidget(widget, 1, col)
-            widget.setFixedHeight(32)
+        preset_help = {
+            "Beam": "후보 문장을 몇 갈래로 비교할지 정합니다. 높을수록 느리지만 안정적일 수 있습니다.",
+            "말소리": "단위는 ms입니다. 이 길이 이상 이어진 소리를 실제 발화로 봅니다. 짧게 잡으면 작은 말도 잡고, 길게 잡으면 잡음이 줄어듭니다.",
+            "무음": "단위는 ms입니다. 이 길이 이상 조용하면 문장이나 구간을 끊습니다. 짧으면 자주 나뉘고, 길면 길게 이어집니다.",
+            "반복 억제": "같은 문구를 반복해서 내는 현상을 줄입니다. 높일수록 반복은 줄지만 표현이 달라질 수 있습니다.",
+        }
+        preset_value_title = QLabel("설정 입력")
+        preset_value_title.setObjectName("PresetSectionTitle")
+        preset_grid.addWidget(preset_value_title, 2, 0, 1, 4)
+        preset_inputs = [
+            ("Beam", self.custom_beam_spin, 0, 0),
+            ("반복 억제", self.custom_repetition_spin, 0, 2),
+            ("말소리 (ms)", self.custom_vad_speech_spin, 2, 0),
+            ("무음 (ms)", self.custom_vad_silence_spin, 2, 2),
+        ]
+        for label_text, widget, row, col in preset_inputs:
+            preset_grid.addWidget(self._small_label(label_text), 3 + row, col, 1, 2)
+            preset_grid.addWidget(widget, 4 + row, col, 1, 2)
+            widget.setFixedHeight(36)
             widget.valueChanged.connect(self._on_custom_preset_changed)
+        self.preset_help_btn = self._make_button("▸ 각 항목 설명", self.toggle_preset_help)
+        self.preset_help_btn.setObjectName("DisclosureButton")
+        self.preset_help_btn.setCheckable(True)
+        preset_grid.addWidget(self.preset_help_btn, 7, 0, 1, 4)
+        help_panel = QFrame()
+        help_panel.setObjectName("Transparent")
+        help_layout = QVBoxLayout(help_panel)
+        help_layout.setContentsMargins(0, 0, 0, 0)
+        help_layout.setSpacing(7)
+        for name, text in preset_help.items():
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(10)
+            title = QLabel(name)
+            title.setObjectName("PresetHelpTitle")
+            title.setFixedWidth(62)
+            desc = QLabel(text)
+            desc.setObjectName("MutedText")
+            desc.setWordWrap(True)
+            row.addWidget(title, 0, Qt.AlignmentFlag.AlignTop)
+            row.addWidget(desc, 1)
+            help_layout.addLayout(row)
+        preset_grid.addWidget(help_panel, 8, 0, 1, 4)
+        self.preset_help_panel = help_panel
+        self.preset_help_panel.setVisible(False)
         layout.addWidget(preset_controls)
+        self.preset_controls_panel = preset_controls
+        self.preset_controls_panel.setVisible(False)
 
         self.model_combo = CleanComboBox()
         for entry in MODEL_CATALOG:
@@ -1097,40 +1263,54 @@ class SubtitleGUI(QMainWindow):
         self._configure_combo(self.model_combo, 18)
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
 
-        model_row = QHBoxLayout()
-        model_row.setSpacing(10)
-        model_row.addWidget(self.model_combo, 1)
+        model_row = QGridLayout()
+        model_row.setContentsMargins(0, 0, 0, 0)
+        model_row.setHorizontalSpacing(8)
+        model_row.setVerticalSpacing(0)
+        model_label = self._small_label("모델")
+        model_label.setFixedWidth(36)
+        model_row.addWidget(model_label, 0, 0, Qt.AlignmentFlag.AlignVCenter)
+        model_row.addWidget(self.model_combo, 0, 1)
         self.settings_download_model_btn = self._make_button("모델 다운로드", self.start_model_download)
-        self.settings_download_model_btn.setMinimumWidth(132)
-        model_row.addWidget(self.settings_download_model_btn)
+        self.settings_download_model_btn.setFixedWidth(118)
+        self.settings_download_model_btn.setEnabled(False)
+        model_row.addWidget(self.settings_download_model_btn, 0, 2)
+        model_row.setColumnStretch(1, 1)
         model_wrap = QWidget()
         model_wrap.setObjectName("Transparent")
         model_wrap.setLayout(model_row)
         self.settings_download_model_btn.setFixedHeight(40)
-        self._form_row(layout, "모델", model_wrap)
+        layout.addWidget(model_wrap)
 
         model_state = QFrame()
         model_state.setObjectName("Transparent")
         self.model_state_panel = model_state
-        model_state_layout = QHBoxLayout(model_state)
-        model_state_layout.setContentsMargins(10, 8, 10, 8)
-        model_state_layout.setSpacing(10)
-        self.model_state_badge = QLabel("확인 중")
+        model_state_layout = QVBoxLayout(model_state)
+        model_state_layout.setContentsMargins(0, 2, 0, 0)
+        model_state_layout.setSpacing(6)
+        model_state_row = QGridLayout()
+        model_state_row.setContentsMargins(0, 0, 0, 0)
+        model_state_row.setHorizontalSpacing(8)
+        model_state_row.setVerticalSpacing(0)
+        self.model_state_badge = QPushButton("모델 확인 중")
+        self.model_state_badge.setEnabled(False)
+        self.model_state_badge.setObjectName("ModelStateButton")
+        self.model_state_badge.setFixedHeight(38)
         self.model_status_summary_label = QLabel("")
         self.model_status_summary_label.setObjectName("MutedText")
         self.model_status_summary_label.setWordWrap(True)
         self.model_cache_path_label = QLabel("")
         self.model_cache_path_label.setObjectName("MutedText")
         self.model_cache_path_label.setWordWrap(True)
-        model_text = QVBoxLayout()
-        model_text.setSpacing(2)
-        model_text.addWidget(self.model_cache_path_label)
-        self.model_detail_btn = self._make_button("위치", self.toggle_model_details)
+        self.model_detail_btn = self._make_button("저장 위치", self.toggle_model_details)
         self.model_detail_btn.setObjectName("CompactButton")
-        self.model_detail_btn.setFixedSize(64, 34)
-        model_state_layout.addWidget(self.model_state_badge)
-        model_state_layout.addLayout(model_text, 1)
-        model_state_layout.addWidget(self.model_detail_btn)
+        self.model_detail_btn.setFixedHeight(38)
+        model_state_row.addWidget(self.model_state_badge, 0, 0)
+        model_state_row.addWidget(self.model_detail_btn, 0, 1)
+        model_state_row.setColumnStretch(0, 1)
+        model_state_row.setColumnStretch(1, 1)
+        model_state_layout.addLayout(model_state_row)
+        model_state_layout.addWidget(self.model_cache_path_label)
         layout.addWidget(model_state)
         self.model_cache_path_label.setVisible(False)
 
@@ -1179,9 +1359,10 @@ class SubtitleGUI(QMainWindow):
         output_row.setContentsMargins(10, 8, 10, 8)
         output_row.setSpacing(18)
         self.output_fmt_srt = QCheckBox("SRT")
+        self.output_fmt_smi = QCheckBox("SMI")
         self.output_fmt_txt = QCheckBox("TXT")
         self.output_fmt_vtt = QCheckBox("VTT")
-        for cb in [self.output_fmt_srt, self.output_fmt_txt, self.output_fmt_vtt]:
+        for cb in [self.output_fmt_srt, self.output_fmt_smi, self.output_fmt_txt, self.output_fmt_vtt]:
             cb.stateChanged.connect(self._refresh_selection_hints)
             cb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             output_row.addWidget(cb)
@@ -1202,25 +1383,55 @@ class SubtitleGUI(QMainWindow):
         return card
 
     def _build_system_card(self) -> QWidget:
-        card, layout = self._card("전사 환경", "")
-        self.system_overview_title = QLabel("점검 대기")
+        card, layout = self._card("런타임", "")
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(8)
+        title_box = QVBoxLayout()
+        title_box.setContentsMargins(0, 0, 0, 0)
+        title_box.setSpacing(3)
+        self.system_overview_title = QLabel("런타임 점검 대기")
         self.system_overview_title.setObjectName("StatusTitle")
         self.system_overview_meta = QLabel("모델 · 엔진 · 장치 · 런타임")
         self.system_overview_meta.setObjectName("MutedText")
         self.system_overview_meta.setWordWrap(True)
-        layout.addWidget(self.system_overview_title)
-        layout.addWidget(self.system_overview_meta)
+        title_box.addWidget(self.system_overview_title)
+        self.system_overview_meta.setVisible(False)
+        top_row.addLayout(title_box, 1)
 
-        check_row = QHBoxLayout()
-        check_row.setSpacing(8)
         self.system_check_btn = self._make_button("시스템 점검", self.start_system_check, primary=True)
-        self.system_check_btn.setFixedHeight(38)
-        check_row.addWidget(self.system_check_btn)
+        self.system_check_btn.setFixedSize(88, 38)
+        self.system_details_btn = self._make_button("상세", self.show_system_details)
+        self.system_details_btn.setObjectName("CompactButton")
+        self.system_details_btn.setFixedSize(52, 38)
+        self.resource_state_btn = self._make_button("안정", self._handle_resource_state_clicked)
+        self.resource_state_btn.setObjectName("CompactButton")
+        self.resource_state_btn.setFixedSize(72, 38)
+        top_row.addWidget(self.system_check_btn)
+        top_row.addWidget(self.system_details_btn)
+        top_row.addWidget(self.resource_state_btn)
+        layout.addLayout(top_row)
+
+        resource_panel = QFrame()
+        resource_panel.setObjectName("InlinePanel")
+        resource_row = QHBoxLayout(resource_panel)
+        resource_row.setContentsMargins(10, 8, 10, 8)
+        resource_row.setSpacing(8)
+        self.cpu_meter = self._resource_meter("CPU")
+        self.ram_meter = self._resource_meter("RAM")
+        self.vram_meter = self._resource_meter("VRAM")
+        for meter in [self.cpu_meter, self.ram_meter, self.vram_meter]:
+            resource_row.addWidget(meter, 1)
+        self.resource_refresh_btn = self._make_button("갱신", self.refresh_live_resource_now)
+        self.resource_refresh_btn.setObjectName("CompactButton")
+        self.resource_refresh_btn.setFixedSize(64, 36)
+        resource_row.addWidget(self.resource_refresh_btn)
+        layout.addWidget(resource_panel)
+
         self.system_check_hint = QLabel("모델, 엔진, GPU/CPU, 런타임 조합을 확인합니다.")
         self.system_check_hint.setObjectName("MutedText")
         self.system_check_hint.setWordWrap(True)
-        check_row.addWidget(self.system_check_hint, 1)
-        layout.addLayout(check_row)
+        self.system_check_hint.setVisible(False)
 
         self.system_check_steps = QLabel("대기")
         self.system_check_steps.setObjectName("MutedText")
@@ -1246,9 +1457,10 @@ class SubtitleGUI(QMainWindow):
 
     def _build_log_card(self) -> QWidget:
         card, layout = self._card("작업 로그", "")
+        card.setMinimumHeight(190)
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMinimumHeight(180)
+        self.log_text.setMinimumHeight(116)
         self.log_text.setFont(QFont(self.code_font_family, 10))
         layout.addWidget(self.log_text)
         return card
@@ -1370,6 +1582,8 @@ class SubtitleGUI(QMainWindow):
         result = []
         if self.output_fmt_srt.isChecked():
             result.append("srt")
+        if self.output_fmt_smi.isChecked():
+            result.append("smi")
         if self.output_fmt_txt.isChecked():
             result.append("txt")
         if self.output_fmt_vtt.isChecked():
@@ -1404,14 +1618,23 @@ class SubtitleGUI(QMainWindow):
     def toggle_model_details(self):
         visible = not self.model_cache_path_label.isVisible()
         self.model_cache_path_label.setVisible(visible)
-        self.model_detail_btn.setText("숨김" if visible else "위치")
+        self.model_detail_btn.setText("위치 숨김" if visible else "저장 위치")
+
+    def toggle_preset_details(self):
+        visible = self.preset_disclosure_btn.isChecked()
+        self.preset_controls_panel.setVisible(visible)
+        self.preset_disclosure_btn.setText(("▾" if visible else "▸") + " 프리셋 상세")
+
+    def toggle_preset_help(self):
+        visible = self.preset_help_btn.isChecked()
+        self.preset_help_panel.setVisible(visible)
+        self.preset_help_btn.setText(("▾" if visible else "▸") + " 각 항목 설명")
 
     def _on_output_folder_mode_changed(self):
         use_source = self.use_source_folder_check.isChecked()
         self.output_dir_edit.setEnabled(not use_source)
         self.output_dir_btn.setEnabled(not use_source)
-        self.output_dir_edit.setVisible(not use_source)
-        self.output_dir_btn.setVisible(not use_source)
+        self.output_dir_edit.setPlaceholderText("원본 폴더에 저장됨" if use_source else "저장 폴더 선택")
         self._refresh_selection_hints()
 
     def _on_output_dir_text_changed(self):
@@ -1469,6 +1692,7 @@ class SubtitleGUI(QMainWindow):
         self._set_audio_enhance_level(self.settings.get("audio_enhance_level", DEFAULT_AUDIO_ENHANCE_LEVEL))
         formats = self.settings.get("output_formats", DEFAULT_OUTPUT_FORMATS)
         self.output_fmt_srt.setChecked("srt" in formats or not formats)
+        self.output_fmt_smi.setChecked("smi" in formats)
         self.output_fmt_txt.setChecked("txt" in formats)
         self.output_fmt_vtt.setChecked("vtt" in formats)
         self.use_source_folder_check.setChecked(bool(self.settings.get("use_source_folder", True)))
@@ -1525,12 +1749,7 @@ class SubtitleGUI(QMainWindow):
         self.quick_audio_value.setText(audio_text)
         self.quick_output_value.setText(outputs)
         if hasattr(self, "preset_detail_label"):
-            temps = ", ".join(str(v) for v in preset.get("temperature", []))
-            self.preset_detail_label.setText(
-                f"{preset.get('short_note', '')}\n"
-                f"beam {self.custom_beam_spin.value()} · VAD {self.custom_vad_speech_spin.value()}/{self.custom_vad_silence_spin.value()}ms · "
-                f"temp {temps} · 반복 억제 {self.custom_repetition_spin.value():.2f}"
-            )
+            self.preset_detail_label.setText(f"{preset.get('short_note', '')} · {preset.get('long_note', '')}")
         if hasattr(self, "quick_save_value"):
             self.quick_save_value.setText(save_text)
 
@@ -1716,6 +1935,7 @@ class SubtitleGUI(QMainWindow):
             self._set_audio_enhance_level(rec["audio_enhance_level"])
         output_formats = rec.get("output_formats") or list(DEFAULT_OUTPUT_FORMATS)
         self.output_fmt_srt.setChecked("srt" in output_formats)
+        self.output_fmt_smi.setChecked("smi" in output_formats)
         self.output_fmt_txt.setChecked("txt" in output_formats)
         self.output_fmt_vtt.setChecked("vtt" in output_formats)
         if rec.get("model_id"):
@@ -1813,10 +2033,7 @@ class SubtitleGUI(QMainWindow):
         self.worker_thread = None
         self.start_btn.setEnabled(bool(self.input_files))
         self.cancel_btn.setEnabled(False)
-        if hasattr(self, "download_model_btn"):
-            self.download_model_btn.setEnabled(True)
-        if hasattr(self, "settings_download_model_btn"):
-            self.settings_download_model_btn.setEnabled(True)
+        self._refresh_model_state_local()
         self.job_clock_timer.stop()
         if clear_transfer:
             self.footer_transfer_label.setText("")
@@ -1833,11 +2050,11 @@ class SubtitleGUI(QMainWindow):
         if 0 < self.current_progress_percent < 100:
             estimated_total = elapsed * (100.0 / max(self.current_progress_percent, 1.0))
             remaining = max(0.0, estimated_total - elapsed)
-            meta = f"경과 {elapsed_text} · 예상 잔여 {format_elapsed_text(remaining)}"
+            meta = f"소요 시간 {elapsed_text} · 예상 남은 시간 {format_elapsed_text(remaining)} · 예상 총 {format_elapsed_text(estimated_total)}"
         else:
-            meta = f"경과 {elapsed_text}"
+            meta = f"소요 시간 {elapsed_text} · 예상 시간 계산 중"
         self.activity_job_meta_label.setText(meta)
-        self.footer_meta_label.setText(self._compact_status_text(meta, 76))
+        self.footer_meta_label.setText(self._compact_status_text(meta, 96))
 
     def _notify_task_busy(self, task_name: str):
         QMessageBox.information(self, "작업 진행 중", f"이미 다른 작업이 진행 중입니다.\n현재 요청: {task_name}")
@@ -1865,15 +2082,15 @@ class SubtitleGUI(QMainWindow):
             return
         levels = [tile.get("level", "neutral") for tile in self.status_tiles.values()]
         if any(level == "danger" for level in levels):
-            title = "전사 환경 오류"
+            title = "런타임 오류"
             meta = "오류 항목을 확인한 뒤 다시 점검하십시오."
             badge_level = "danger"
         elif any(level == "warning" for level in levels):
-            title = "전사 환경 확인 필요"
+            title = "런타임 확인 필요"
             meta = "일부 항목이 준비되지 않았습니다. 모델 다운로드나 장치 설정을 확인하십시오."
             badge_level = "warning"
         elif levels and all(level == "success" for level in levels):
-            title = "전사 환경 준비 완료"
+            title = "런타임 준비 완료"
             meta = f"모델 {self.current_model_id()} · 장치 {self.current_preferred_device().upper()}"
             badge_level = "success"
         else:
@@ -1883,9 +2100,10 @@ class SubtitleGUI(QMainWindow):
         if hasattr(self, "system_overview_title"):
             self.system_overview_title.setText(title)
             self.system_overview_meta.setText(meta)
+            self.system_overview_meta.setVisible(False)
             if hasattr(self, "system_check_steps"):
                 self.system_check_steps.setText(meta)
-                self.system_check_steps.setVisible(self.current_task_kind == "system_check")
+                self.system_check_steps.setVisible(False)
         if hasattr(self, "options_health_badge"):
             self._set_badge(self.options_health_badge, badge_level, {"success": "준비", "warning": "확인", "danger": "오류"}.get(badge_level, "점검"))
             self.options_health_title.setText(title)
@@ -1901,7 +2119,7 @@ class SubtitleGUI(QMainWindow):
 
     def _apply_model_availability(self, info: dict):
         if info.get("is_cached"):
-            self._set_badge(self.model_state_badge, "success", "모델 로컬 준비됨")
+            self._set_badge(self.model_state_badge, "success", "로컬 모델 준비됨")
             summary = f"{info.get('label', self.current_model_id())} 모델이 로컬 캐시에 있습니다."
             tile_level = "success"
         else:
@@ -1943,6 +2161,57 @@ class SubtitleGUI(QMainWindow):
             }
             self.resource_state_btn.setStyleSheet(f"background:{palette.get(level, '#34414d')}; color:#f7fafc;")
 
+    def _handle_resource_state_clicked(self):
+        self.resource_easter_clicks += 1
+        messages = {
+            1: "안정 신호 수신. 패널 아래쪽에서 아주 작은 주파수가 깜빡였습니다.",
+            2: "조율 중... 아직 아무 일도 안 일어난 척하는 중입니다.",
+            3: "비밀 채널 3번에 접속했습니다. 계속 누르면 채널이 열립니다.",
+            4: "파형이 동그랗게 말렸습니다. 이건 대체로 좋은 징조입니다.",
+            5: "숨은 채널이 거의 맞았습니다. 손끝 감도 좋네요.",
+            6: "마지막 클릭 대기 중. 볼륨은 마음속으로만 올려주세요.",
+        }
+        if self.resource_easter_clicks >= 7:
+            self.resource_easter_clicks = 0
+            self._show_easter_egg_banner(
+                "◆ 숨은 채널 개방: Whisper Studio가 조용히 하이파이브를 보냈습니다. 오늘의 파형은 반짝입니다."
+            )
+            return
+        self._show_easter_egg_banner(messages.get(self.resource_easter_clicks, "안정 신호를 수신했습니다."))
+
+    def _show_easter_egg_banner(self, text: str):
+        if not self.easter_egg_label or not self.easter_opacity_effect:
+            return
+        if self.easter_hide_timer:
+            self.easter_hide_timer.stop()
+        if self.easter_fade_animation:
+            self.easter_fade_animation.stop()
+        self.easter_egg_label.setText(text)
+        self._position_easter_egg_toast()
+        self.easter_egg_label.raise_()
+        self.easter_egg_label.setVisible(True)
+        self.easter_fade_animation = QPropertyAnimation(self.easter_opacity_effect, b"opacity", self)
+        self.easter_fade_animation.setDuration(220)
+        self.easter_fade_animation.setStartValue(float(self.easter_opacity_effect.opacity()))
+        self.easter_fade_animation.setEndValue(1.0)
+        self.easter_fade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.easter_fade_animation.start()
+        if self.easter_hide_timer:
+            self.easter_hide_timer.start(4200)
+
+    def _hide_easter_egg_toast(self):
+        if not self.easter_egg_label or not self.easter_opacity_effect:
+            return
+        if self.easter_fade_animation:
+            self.easter_fade_animation.stop()
+        self.easter_fade_animation = QPropertyAnimation(self.easter_opacity_effect, b"opacity", self)
+        self.easter_fade_animation.setDuration(520)
+        self.easter_fade_animation.setStartValue(float(self.easter_opacity_effect.opacity()))
+        self.easter_fade_animation.setEndValue(0.0)
+        self.easter_fade_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self.easter_fade_animation.finished.connect(self.easter_egg_label.hide)
+        self.easter_fade_animation.start()
+
     def refresh_live_resource_now(self):
         if self.worker_thread and self.worker_thread.is_alive() and self.current_task_kind == "model_download":
             return
@@ -1950,6 +2219,7 @@ class SubtitleGUI(QMainWindow):
             payload = collect_live_resource_status()
             self.live_resource_data = payload
             self._update_live_resource_ui(payload)
+            self._refresh_system_details_dialog(payload)
         except Exception as exc:
             if hasattr(self, "resource_state_btn"):
                 self.resource_state_btn.setText("갱신 실패")
@@ -1963,7 +2233,26 @@ class SubtitleGUI(QMainWindow):
             latest = {"error": str(exc)}
 
         dialog = SystemDetailsDialog("시스템 상세 정보", self._system_detail_sections(latest), self)
+        self.system_details_dialog = dialog
+        dialog.refresh_button.clicked.connect(self._refresh_system_details_from_dialog)
+        dialog.finished.connect(lambda _result: setattr(self, "system_details_dialog", None))
         dialog.exec()
+
+    def _refresh_system_details_from_dialog(self):
+        try:
+            latest = collect_live_resource_status()
+            self.live_resource_data = latest
+            self._update_live_resource_ui(latest)
+        except Exception as exc:
+            latest = {"error": str(exc)}
+        self._refresh_system_details_dialog(latest)
+
+    def _refresh_system_details_dialog(self, latest: dict | None = None):
+        dialog = getattr(self, "system_details_dialog", None)
+        if dialog is None or not dialog.isVisible():
+            return
+        latest = latest or self.live_resource_data or {}
+        dialog.update_sections(self._system_detail_sections(latest))
 
     def _system_detail_sections(self, latest: dict) -> list[dict]:
         model_entry = next((m for m in MODEL_CATALOG if m["id"] == self.current_model_id()), None)
@@ -2066,10 +2355,10 @@ class SubtitleGUI(QMainWindow):
         scan_settings["preferred_device"] = self.current_preferred_device()
 
         self._set_status("시스템 상태를 점검하는 중입니다...")
-        self.system_overview_title.setText("전사 환경 점검 중")
+        self.system_overview_title.setText("런타임 점검 중")
         self.system_overview_meta.setText("모델 캐시 · CTranslate2 · PyTorch/CUDA · GPU/CPU · 런타임 조합")
         self.system_check_steps.setText("모델 캐시 확인 → 엔진 점검 → 장치 감지 → 실행 조합 검증")
-        self.system_check_steps.setVisible(True)
+        self.system_check_steps.setVisible(False)
         self._set_transfer_texts(
             f"시스템 점검 · 모델 {self.current_model_id()} · 장치 선호 {self.current_preferred_device().upper()}",
             "환경, 엔진, 장치, 실행 조합을 점검합니다.",
@@ -2109,15 +2398,18 @@ class SubtitleGUI(QMainWindow):
         self.status_details = dict(info.get("details", {}))
         self.base_status_details = dict(info.get("details", {}))
         if info.get("live_resources"):
+            self.live_resource_data = info["live_resources"]
             self._update_live_resource_ui(info["live_resources"])
         for key in ["model", "engine", "torch", "device", "runtime"]:
             item = info.get(key, {})
             self._update_status_tile(key, item.get("level", "neutral"), item.get("summary", ""), item.get("meta", ""))
+        self._refresh_system_details_dialog(self.live_resource_data)
 
     def _apply_runtime_choice_cards(self, choice: dict):
         summary = f"{choice.get('device', '?')} / {choice.get('compute_type', '?')}"
         meta = choice.get("reason", "실행 조합 검증 성공")
         self._update_status_tile("runtime", "success", summary, meta)
+        self._refresh_system_details_dialog(self.live_resource_data)
 
     def _request_model_download_permission(self, info: dict, reason: str) -> bool:
         ticket = {"info": info, "reason": reason, "approved": False, "event": threading.Event()}
@@ -2151,6 +2443,14 @@ class SubtitleGUI(QMainWindow):
         model_id = self.current_model_id()
         self._set_status(f"모델 준비 상태를 확인하는 중입니다... ({model_id})")
         self._set_progress_value(0)
+        try:
+            info = inspect_model_availability(model_id, include_remote_meta=False)
+            self._apply_model_availability(info)
+            if info.get("is_cached"):
+                self._set_transfer_texts(f"모델 준비 완료 · {model_id}", "이미 로컬에 준비되어 있습니다.")
+                return
+        except Exception:
+            pass
         self._set_transfer_texts(f"모델 다운로드 · {model_id}", "다운로드 준비를 마치는 중입니다.")
         self._begin_task("model_download", "모델 다운로드", cancellable=True)
         self.worker_thread = threading.Thread(target=self._worker_model_download, args=(model_id,), daemon=True)
