@@ -681,6 +681,7 @@ def transcribe_media(model, media_path: str, lang: str, preset: dict, log, progr
     temperature = list(preset.get("temperature", [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]))
     log_prob_threshold = float(preset.get("log_prob_threshold", -1.0))
     compression_ratio_threshold = float(preset.get("compression_ratio_threshold", 2.4))
+    no_speech_threshold = float(preset.get("no_speech_threshold", 0.6))
     condition_on_previous_text = bool(preset.get("condition_on_previous_text", False))
     repetition_penalty = float(preset.get("repetition_penalty", 1.0))
     word_timestamps = bool(preset.get("word_timestamps", True))
@@ -709,6 +710,7 @@ def transcribe_media(model, media_path: str, lang: str, preset: dict, log, progr
         temperature=temperature,
         log_prob_threshold=log_prob_threshold,
         compression_ratio_threshold=compression_ratio_threshold,
+        no_speech_threshold=no_speech_threshold,
         condition_on_previous_text=condition_on_previous_text,
         repetition_penalty=repetition_penalty,
         word_timestamps=word_timestamps,
@@ -761,6 +763,8 @@ def run_transcription_job(
     preset_id: str = DEFAULT_PRESET_ID,
     audio_enhance_level: str = DEFAULT_AUDIO_ENHANCE_LEVEL,
     output_formats: list[str] | tuple[str, ...] | None = None,
+    output_dir: str | None = None,
+    preset_overrides: dict | None = None,
     cancel_event=None,
 ):
     setup_runtime_environment()
@@ -786,7 +790,9 @@ def run_transcription_job(
         whisper_model = load_faster_whisper_model(model_id, device, compute_type, log)
 
         _raise_if_cancelled(cancel_event)
-        preset = get_transcription_preset(preset_id)
+        preset = dict(get_transcription_preset(preset_id))
+        if preset_overrides:
+            preset.update(preset_overrides)
         log(f"선택 프리셋: {preset['label']} ({preset['id']})")
 
         progress(20)
@@ -800,6 +806,9 @@ def run_transcription_job(
         _raise_if_cancelled(cancel_event)
         progress(98)
         base, _ = os.path.splitext(in_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            base = os.path.join(output_dir, os.path.basename(base))
         saved_paths = save_results(base, cues, output_formats=output_formats)
 
         progress(100)

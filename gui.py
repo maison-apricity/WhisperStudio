@@ -7,23 +7,24 @@ import sys
 import threading
 import time
 import traceback
-import ctypes
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QRect
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFrame,
-    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -32,27 +33,20 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QSizeGrip,
     QSizePolicy,
-    QSpacerItem,
-    QStackedWidget,
-    QStyle,
-    QToolButton,
+    QDoubleSpinBox,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from config import (
     APP_NAME,
-    APP_TAGLINE,
-    APP_VERSION,
     DEFAULT_AUDIO_ENHANCE_LEVEL,
     DEFAULT_LANGUAGE,
     DEFAULT_OUTPUT_FORMATS,
     DEFAULT_PREFERRED_DEVICE,
     DEFAULT_PRESET_ID,
-    LANGUAGE_NATIVE_NAMES,
-    LANGUAGE_OPTIONS,
     TRANSCRIPTION_PRESETS,
     get_language_korean_name,
     get_transcription_preset,
@@ -64,68 +58,44 @@ from env_manager import (
     download_model_to_cache,
     inspect_model_availability,
 )
+from font_runtime import bundled_font_files
 from model_catalog import MODEL_CATALOG, default_model_id
 from paths import bundled_icon_path, clear_temp_work_dir
 from settings_manager import load_settings, save_settings
 from subtitle_engine import probe_media_duration_seconds, run_transcription_job
 
 
-DWM_SYSTEMBACKDROP_TYPE = 38
-DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-DWMWA_REDIRECTIONBITMAP_ALPHA = 40
-DWMSBT_AUTO = 0
-DWMSBT_NONE = 1
-DWMSBT_MAINWINDOW = 2
-DWMSBT_TRANSIENTWINDOW = 3
-DWMSBT_TABBEDWINDOW = 4
-WM_DWMCOMPOSITIONCHANGED = 0x031E
-WM_THEMECHANGED = 0x031A
-WM_SETTINGCHANGE = 0x001A
+LANGUAGE_LABELS = [
+    ("auto", "자동 감지"),
+    ("ko", "한국어"),
+    ("en", "영어"),
+    ("ja", "일본어"),
+    ("zh", "중국어"),
+    ("de", "독일어"),
+    ("fr", "프랑스어"),
+    ("es", "스페인어"),
+]
 
-
-class MARGINS(ctypes.Structure):
-    _fields_ = [
-        ("cxLeftWidth", ctypes.c_int),
-        ("cxRightWidth", ctypes.c_int),
-        ("cyTopHeight", ctypes.c_int),
-        ("cyBottomHeight", ctypes.c_int),
-    ]
-
-
-COLOR = {
-    "shell": QColor(0, 0, 0, 0),
-    "shell_edge": QColor(0, 0, 0, 0),
-    "panel_fill": QColor(255, 255, 255, 112),
-    "panel_fill_deep": QColor(255, 255, 255, 136),
-    "panel_highlight": QColor(255, 255, 255, 154),
-    "panel_edge": QColor(255, 255, 255, 124),
-    "panel_shadow": QColor(50, 35, 52, 26),
-    "tile_fill": QColor(255, 255, 255, 150),
-    "tile_edge": QColor(255, 255, 255, 142),
-    "text": QColor(46, 38, 49),
-    "muted": QColor(96, 86, 102),
-    "soft": QColor(124, 113, 130),
-    "accent": QColor(244, 153, 124),
-    "accent_2": QColor(233, 133, 173),
-    "accent_3": QColor(241, 190, 140),
-    "success": QColor(88, 176, 129),
-    "warning": QColor(214, 155, 82),
-    "danger": QColor(216, 112, 112),
-    "info": QColor(112, 159, 219),
-    "neutral": QColor(168, 157, 172),
-    "track": QColor(255, 255, 255, 58),
-    "fill": QColor(244, 153, 124),
+PRESET_LABELS = {
+    "auto-balanced": "균형",
+    "lecture-meeting": "강의·회의",
+    "dialogue-video": "대화·영상",
+    "noisy-performance": "소음 많은 현장",
+    "speed-priority": "속도 우선",
+    "quality-priority": "정확도 우선",
 }
+
+DEVICE_LABELS = {"auto": "자동", "cuda": "GPU", "cpu": "CPU"}
+AUDIO_LABELS = {"off": "끔", "standard": "표준", "strong": "강함"}
 
 
 def compact_path_for_display(path: str, keep_tail: int = 3) -> str:
     if not path:
         return ""
-    p = Path(path)
-    parts = list(p.parts)
+    parts = list(Path(path).parts)
     if len(parts) <= keep_tail + 1:
-        return str(p)
-    return str(Path("…", *parts[-keep_tail:]))
+        return str(Path(path))
+    return str(Path("...", *parts[-keep_tail:]))
 
 
 def format_elapsed_text(seconds: float | int | None) -> str:
@@ -144,331 +114,74 @@ def open_path(path: str) -> None:
         return
     if os.name == "nt":
         os.startfile(path)
-        return
-    if sys.platform == "darwin":
+    elif sys.platform == "darwin":
         subprocess.Popen(["open", path])
-        return
-    subprocess.Popen(["xdg-open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
 
 
-def apply_windows_backdrop(widget: QWidget) -> None:
-    if os.name != "nt":
-        return
-    try:
-        hwnd = int(widget.winId())
-    except Exception:
-        return
-
-    try:
-        margins = MARGINS(-1, -1, -1, -1)
-        ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
-    except Exception:
-        pass
-
-    try:
-        dark = ctypes.c_int(0)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(dark), ctypes.sizeof(dark))
-    except Exception:
-        pass
-
-    for backdrop in (DWMSBT_TRANSIENTWINDOW, DWMSBT_MAINWINDOW):
-        try:
-            value = ctypes.c_int(backdrop)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, DWM_SYSTEMBACKDROP_TYPE, ctypes.byref(value), ctypes.sizeof(value))
-            break
-        except Exception:
-            continue
-
-    try:
-        alpha = ctypes.c_int(1)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_REDIRECTIONBITMAP_ALPHA, ctypes.byref(alpha), ctypes.sizeof(alpha))
-    except Exception:
-        pass
-
-
-
-class FrostedPanel(QFrame):
-    def __init__(self, radius: int = 24, parent: QWidget | None = None):
+class Card(QFrame):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self._radius = radius
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setObjectName("Card")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(24)
-        shadow.setOffset(0, 8)
-        shadow.setColor(COLOR["panel_shadow"])
-        self.setGraphicsEffect(shadow)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            rect = self.rect().adjusted(1, 1, -1, -1)
-            if rect.width() <= 0 or rect.height() <= 0:
-                return
-
-            path = QPainterPath()
-            path.addRoundedRect(rect, self._radius, self._radius)
-
-            gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-            gradient.setColorAt(0.0, COLOR["panel_fill_deep"])
-            gradient.setColorAt(0.22, COLOR["panel_fill"])
-            gradient.setColorAt(1.0, QColor(255, 255, 255, 92))
-            painter.fillPath(path, gradient)
-
-            highlight_rect = rect.adjusted(0, 0, 0, -max(12, rect.height() // 2))
-            highlight_path = QPainterPath()
-            highlight_path.addRoundedRect(highlight_rect, self._radius, self._radius)
-            painter.fillPath(highlight_path, QColor(255, 255, 255, 18))
-
-            painter.setPen(QPen(COLOR["panel_edge"], 1.0))
-            painter.drawPath(path)
-        finally:
-            painter.end()
 
 
-class PlainPanel(QFrame):
-    def __init__(self, radius: int = 18, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setObjectName("PlainPanel")
-        self.setProperty("radius", radius)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+class CleanComboBox(QComboBox):
+    def showPopup(self):
+        view = self.view()
+        if view is not None:
+            popup = view.window()
+            popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+            popup.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            popup.setStyleSheet("background:#1f2830; border:1px solid #546574;")
+            view.viewport().setAutoFillBackground(True)
+        super().showPopup()
+        if view is not None:
+            row_count = min(self.count(), self.maxVisibleItems())
+            row_height = max(24, view.sizeHintForRow(0) if self.count() else 24)
+            height = row_count * row_height + 6
+            width = self.width()
+            popup = view.window()
+            popup.setFixedSize(width, height)
+            view.setFixedSize(width, height)
 
 
-class BackdropSurface(QWidget):
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            rect = self.rect()
-            painter.fillRect(rect, Qt.GlobalColor.transparent)
-
-            blobs = [
-                (QColor(255, 158, 122, 18), QRect(int(rect.width() * 0.62), -36, 320, 220)),
-                (QColor(239, 140, 180, 14), QRect(-70, int(rect.height() * 0.18), 240, 190)),
-                (QColor(241, 190, 140, 10), QRect(int(rect.width() * 0.24), int(rect.height() * 0.76), 280, 130)),
-            ]
-            for color, blob_rect in blobs:
-                gradient = QLinearGradient(blob_rect.topLeft(), blob_rect.bottomRight())
-                c0 = QColor(color)
-                c1 = QColor(color)
-                c1.setAlpha(max(0, c1.alpha() // 8))
-                gradient.setColorAt(0.0, c0)
-                gradient.setColorAt(1.0, c1)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(gradient)
-                painter.drawEllipse(blob_rect)
-        finally:
-            painter.end()
-
-
-class SidebarButton(QPushButton):
-    def __init__(self, text: str, parent: QWidget | None = None):
-        super().__init__(text, parent)
-        self.setCheckable(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(46)
-        self.setStyleSheet(
-            """
-            QPushButton {
-                color: rgba(62,50,66,0.94);
-                background: rgba(255,255,255,0.24);
-                border: 1px solid rgba(255,255,255,0.46);
-                border-radius: 16px;
-                padding: 12px 16px;
-                text-align: left;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: rgba(255,255,255,0.36);
-                border: 1px solid rgba(255,255,255,0.56);
-            }
-            QPushButton:checked {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(244,153,124,0.74),
-                    stop:1 rgba(233,133,173,0.58));
-                border: 1px solid rgba(255,255,255,0.72);
-            }
-            """
-        )
-
-
-class ChipButton(QPushButton):
-    def __init__(self, text: str, parent: QWidget | None = None):
-        super().__init__(text, parent)
-        self.setCheckable(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(38)
-        self.setStyleSheet(
-            """
-            QPushButton {
-                color: rgba(62,50,66,0.94);
-                background: rgba(255,255,255,0.14);
-                border: 1px solid rgba(255,255,255,0.48);
-                border-radius: 14px;
-                padding: 8px 14px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background: rgba(255,255,255,0.40);
-            }
-            QPushButton:checked {
-                background: rgba(244,153,124,0.56);
-                border: 1px solid rgba(255,255,255,0.70);
-            }
-            """
-        )
-
-
-class SegmentedTabButton(QPushButton):
-    def __init__(self, text: str, parent: QWidget | None = None):
-        super().__init__(text, parent)
-        self.setCheckable(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(42)
-        self.setMinimumWidth(170)
-        self.setStyleSheet(
-            """
-            QPushButton {
-                color: rgba(58,46,62,0.94);
-                background: rgba(255,255,255,0.16);
-                border: 1px solid rgba(255,255,255,0.50);
-                border-radius: 16px;
-                padding: 10px 18px;
-                font-weight: 700;
-            }
-            QPushButton:hover {
-                background: rgba(255,255,255,0.42);
-            }
-            QPushButton:checked {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(244,153,124,0.84),
-                    stop:1 rgba(233,133,173,0.76));
-                border: 1px solid rgba(255,255,255,0.78);
-                color: rgba(38,24,33,0.96);
-            }
-            """
-        )
-
-
-class DraggableGlassPanel(FrostedPanel):
-    def __init__(self, window: "SubtitleGUI", radius: int = 24, parent: QWidget | None = None):
-        super().__init__(radius=radius, parent=parent)
-        self.window_ref = window
-        self.drag_offset = None
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and not self.window_ref.isMaximized():
-            self.drag_offset = event.globalPosition().toPoint() - self.window_ref.frameGeometry().topLeft()
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self.drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton and not self.window_ref.isMaximized():
-            self.window_ref.move(event.globalPosition().toPoint() - self.drag_offset)
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self.drag_offset = None
-        super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.window_ref.toggle_maximize_restore()
-            event.accept()
-            return
-        super().mouseDoubleClickEvent(event)
-
-
-class TitleBar(QWidget):
-    def __init__(self, window: "SubtitleGUI"):
+class WindowBar(QWidget):
+    def __init__(self, window: QMainWindow):
         super().__init__(window)
-        self.window_ref = window
-        self.drag_offset = None
-        self.setFixedHeight(64)
+        self.window = window
+        self._drag_pos = None
+        self.setObjectName("WindowBar")
+        self.setFixedHeight(36)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(18, 10, 18, 10)
-        layout.setSpacing(10)
-
-        self.menu_btn = QToolButton(self)
-        self.menu_btn.setText("☰")
-        self.menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.menu_btn.setAutoRaise(True)
-        self.menu_btn.clicked.connect(window.toggle_sidebar)
-        layout.addWidget(self.menu_btn)
-
-        text_col = QVBoxLayout()
-        text_col.setSpacing(0)
-        self.title_label = QLabel(APP_NAME)
-        self.title_label.setObjectName("WindowTitle")
-        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.subtitle_label = QLabel(APP_TAGLINE)
-        self.subtitle_label.setObjectName("WindowSubtitle")
-        self.subtitle_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.subtitle_label.setWordWrap(False)
-        text_col.addWidget(self.title_label)
-        text_col.addWidget(self.subtitle_label)
-        layout.addLayout(text_col)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
         layout.addStretch(1)
 
-        self.min_btn = self._make_ctrl("—", window.showMinimized)
-        self.max_btn = self._make_ctrl("▢", window.toggle_maximize_restore)
-        self.close_btn = self._make_ctrl("✕", window.close)
-        layout.addWidget(self.min_btn)
-        layout.addWidget(self.max_btn)
-        layout.addWidget(self.close_btn)
-
-    def _make_ctrl(self, text: str, slot):
-        btn = QToolButton(self)
-        btn.setText(text)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setAutoRaise(True)
-        btn.clicked.connect(slot)
-        btn.setStyleSheet(
-            """
-            QToolButton {
-                color: rgba(70,58,74,0.94);
-                background: rgba(255,255,255,0.14);
-                border: 1px solid rgba(255,255,255,0.48);
-                border-radius: 12px;
-                min-width: 36px;
-                min-height: 36px;
-            }
-            QToolButton:hover {
-                background: rgba(255,255,255,0.40);
-            }
-            """
-        )
-        return btn
+        self.min_btn = QPushButton("−")
+        self.close_btn = QPushButton("×")
+        for btn in [self.min_btn, self.close_btn]:
+            btn.setObjectName("WindowButton")
+            btn.setFixedSize(32, 28)
+            layout.addWidget(btn)
+        self.min_btn.clicked.connect(self.window.showMinimized)
+        self.close_btn.clicked.connect(self.window.close)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and not self.window_ref.isMaximized():
-            self.drag_offset = event.globalPosition().toPoint() - self.window_ref.frameGeometry().topLeft()
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.window.frameGeometry().topLeft()
             event.accept()
-            return
-        super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self.drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton and not self.window_ref.isMaximized():
-            self.window_ref.move(event.globalPosition().toPoint() - self.drag_offset)
+        if self._drag_pos is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.window.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
-            return
-        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        self.drag_offset = None
+        self._drag_pos = None
         super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.window_ref.toggle_maximize_restore()
-            event.accept()
-            return
-        super().mouseDoubleClickEvent(event)
 
 
 class ModelDownloadDialog(QDialog):
@@ -476,59 +189,140 @@ class ModelDownloadDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("모델 다운로드 확인")
         self.setModal(True)
-        self.setMinimumWidth(720)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
+        self.setMinimumWidth(520)
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 12, 12, 12)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(12)
 
-        card = FrostedPanel(radius=26)
-        outer.addWidget(card)
-
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(22, 22, 22, 22)
-        layout.setSpacing(14)
-
-        title = QLabel("선택 모델 다운로드")
+        title = QLabel("모델 다운로드가 필요합니다")
         title.setObjectName("DialogTitle")
-        layout.addWidget(title)
+        body = QLabel(reason)
+        body.setWordWrap(True)
+        desc = QLabel(str(info.get("long_note") or info.get("short_note") or "선택한 Whisper 모델을 로컬 캐시에 내려받습니다."))
+        desc.setObjectName("MutedText")
+        desc.setWordWrap(True)
+        meta = QLabel(
+            f"모델: {info.get('label', info.get('model_id', '알 수 없음'))}\n"
+            f"저장 위치: {info.get('cache_root_display') or info.get('cached_path_display') or 'Hugging Face 캐시'}"
+        )
+        meta.setObjectName("MutedText")
+        meta.setWordWrap(True)
 
-        reason_label = QLabel(reason)
-        reason_label.setWordWrap(True)
-        reason_label.setObjectName("BodyText")
-        layout.addWidget(reason_label)
-
-        rows = [
-            ("모델", info.get("label", "알 수 없음")),
-            ("설명", info.get("long_note", "알 수 없음")),
-            ("원본", info.get("download_source", "알 수 없음")),
-            ("저장 위치", info.get("download_target_display") or compact_path_for_display(info.get("download_target", ""), 4)),
-            ("예상 크기", info.get("remote_size_text", "알 수 없음")),
-            ("100 Mb/s", info.get("eta_100", "알 수 없음")),
-            ("500 Mb/s", info.get("eta_500", "알 수 없음")),
-            ("1 Gb/s", info.get("eta_1000", "알 수 없음")),
-        ]
-
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(8)
-        for row, (key, value) in enumerate(rows):
-            key_label = QLabel(key)
-            key_label.setObjectName("FormLabel")
-            value_label = QLabel(str(value))
-            value_label.setObjectName("BodyText")
-            value_label.setWordWrap(True)
-            grid.addWidget(key_label, row, 0, Qt.AlignmentFlag.AlignTop)
-            grid.addWidget(value_label, row, 1)
-        layout.addLayout(grid)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("다운로드 시작")
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("다운로드")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+
+        layout.addWidget(title)
+        layout.addWidget(body)
+        layout.addWidget(desc)
+        layout.addWidget(meta)
         layout.addWidget(buttons)
+
+
+class DownloadProgressDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("모델 다운로드")
+        self.resize(560, 190)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+        self.title = QLabel("모델 다운로드 준비 중")
+        self.title.setObjectName("DialogTitle")
+        self.message = QLabel("다운로드 정보를 확인하고 있습니다.")
+        self.message.setObjectName("MutedText")
+        self.message.setWordWrap(True)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFixedHeight(34)
+        self.speed = QLabel("")
+        self.speed.setObjectName("MutedText")
+        layout.addWidget(self.title)
+        layout.addWidget(self.message)
+        layout.addWidget(self.progress)
+        layout.addWidget(self.speed)
+
+    def update_progress(self, payload: dict):
+        percent = int(max(0, min(100, float(payload.get("percent") or 0))))
+        self.progress.setValue(percent)
+        self.title.setText(f"모델 다운로드 {percent}%")
+        self.message.setText(payload.get("message", "") or "모델 파일을 내려받는 중입니다.")
+        parts = []
+        if payload.get("downloaded_text") or payload.get("total_text"):
+            parts.append(f"{payload.get('downloaded_text', '')} / {payload.get('total_text', '')}".strip(" /"))
+        if payload.get("speed_text"):
+            parts.append(str(payload.get("speed_text")))
+        if payload.get("eta_text"):
+            parts.append(f"예상 남은 시간 {payload.get('eta_text')}")
+        self.speed.setText(" · ".join(part for part in parts if part))
+
+
+class SystemDetailsDialog(QDialog):
+    def __init__(self, title: str, sections: list[dict] | str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(820, 640)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(14)
+
+        heading = QLabel(title)
+        heading.setObjectName("DialogTitle")
+        layout.addWidget(heading)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        body = QWidget()
+        scroll.setWidget(body)
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(10)
+
+        if isinstance(sections, str):
+            text = QPlainTextEdit()
+            text.setReadOnly(True)
+            text.setPlainText(sections)
+            body_layout.addWidget(text)
+        else:
+            for section in sections:
+                body_layout.addWidget(self._section_card(section.get("title", ""), section.get("rows", [])))
+            body_layout.addStretch(1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
+        buttons.rejected.connect(self.reject)
+
+        layout.addWidget(scroll, 1)
+        layout.addWidget(buttons)
+
+    def _section_card(self, title: str, rows: list[tuple[str, str]]) -> QWidget:
+        card = QFrame()
+        card.setObjectName("InlinePanel")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+        title_label = QLabel(title)
+        title_label.setObjectName("SectionTitle")
+        layout.addWidget(title_label)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(7)
+        for idx, (name, value) in enumerate(rows):
+            key = QLabel(name)
+            key.setObjectName("SideLabel")
+            val = QLabel(str(value or "-"))
+            val.setObjectName("ValueLabel")
+            val.setWordWrap(True)
+            grid.addWidget(key, idx, 0)
+            grid.addWidget(val, idx, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addLayout(grid)
+        return card
 
 
 class SubtitleGUI(QMainWindow):
@@ -547,7 +341,6 @@ class SubtitleGUI(QMainWindow):
         self.status_details = {}
         self.base_status_details = {}
         self.live_resource_data = {}
-        self.resource_refresh_blocked = False
         self.last_measured_speed_mbps = None
         self.last_measured_repo_id = ""
         self.cancel_event = None
@@ -555,24 +348,27 @@ class SubtitleGUI(QMainWindow):
         self.current_task_label = ""
         self.current_progress_percent = 0.0
         self.job_started_at = None
-        self.transfer_mode = ""
-        self.sidebar_expanded = True
-        self._backdrop_applied = False
+        self.download_progress_dialog = None
+        self.loaded_font_families = []
+        self._loading_settings = False
 
         self.setWindowTitle(APP_NAME)
-        self.setObjectName("MainWindow")
-        self.resize(1440, 940)
-        self.setMinimumSize(1180, 820)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.resize(1360, 860)
+        self.setMinimumSize(1180, 760)
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
 
         icon_path = bundled_icon_path()
         if icon_path and os.path.isfile(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
+        self.auto_check_timer = QTimer(self)
+        self.auto_check_timer.setSingleShot(True)
+        self.auto_check_timer.timeout.connect(self.start_system_check)
+
         self._init_fonts()
         self._build_ui()
         self._apply_styles()
+        self._normalize_control_sizes()
         self._load_settings_into_ui()
         self._refresh_selection_hints()
         self._refresh_model_state_local()
@@ -592,234 +388,349 @@ class SubtitleGUI(QMainWindow):
         QTimer.singleShot(150, self.start_system_check)
         QTimer.singleShot(300, self.refresh_live_resource_now)
 
-    # -------------------------------------------------
-    # Qt boot / shell
-    # -------------------------------------------------
     def mainloop(self):
         self.show()
         return self.qt_app.exec()
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        apply_windows_backdrop(self)
-        self._backdrop_applied = True
-
-    def nativeEvent(self, eventType, message):
-        if os.name == "nt":
-            try:
-                msg = ctypes.wintypes.MSG.from_address(int(message))
-                if msg.message in {WM_DWMCOMPOSITIONCHANGED, WM_THEMECHANGED, WM_SETTINGCHANGE}:
-                    QTimer.singleShot(0, lambda: apply_windows_backdrop(self))
-            except Exception:
-                pass
-        return super().nativeEvent(eventType, message)
-
     def closeEvent(self, event):
-        try:
-            if self.cancel_event is not None:
-                self.cancel_event.set()
-        except Exception:
-            pass
+        if self.cancel_event is not None:
+            self.cancel_event.set()
         super().closeEvent(event)
-
-    def toggle_maximize_restore(self):
-        if self.isMaximized():
-            self.showNormal()
-        else:
-            self.showMaximized()
 
     def _init_fonts(self):
         db = QFontDatabase()
-        families = set(db.families())
+        for font_path in bundled_font_files():
+            font_id = QFontDatabase.addApplicationFont(font_path)
+            if font_id >= 0:
+                self.loaded_font_families.extend(QFontDatabase.applicationFontFamilies(font_id))
 
-        def pick(candidates: list[str], fallback: str | None = None) -> str:
+        families = set(QFontDatabase.families())
+        families.update(self.loaded_font_families)
+
+        def pick(candidates: list[str], fallback: str) -> str:
             for name in candidates:
                 if name in families:
                     return name
-            return fallback or self.qt_app.font().family() or "Segoe UI"
+            return fallback
 
-        self.ui_font_family = pick([
-            "Pretendard",
-            "Pretendard Variable",
-            "Noto Sans KR",
-            "Noto Sans CJK KR",
-            "Source Han Sans KR",
-            "Malgun Gothic",
-            "Segoe UI",
-        ])
-        self.code_font_family = pick([
-            "JetBrains Mono",
-            "Cascadia Code",
-            "D2Coding",
-            "Consolas",
-        ], fallback=self.ui_font_family)
-        self.qt_app.setFont(QFont(self.ui_font_family, 10))
+        self.ui_font_family = pick(
+            ["Pretendard", "Pretendard Variable", "SUIT", "Noto Sans KR", "Malgun Gothic", "Segoe UI"],
+            self.qt_app.font().family() or "Segoe UI",
+        )
+        self.code_font_family = pick(["Cascadia Code", "JetBrains Mono", "D2Coding", "Consolas"], self.ui_font_family)
+        app_font = QFont(self.ui_font_family)
+        app_font.setPointSizeF(11.5)
+        app_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias | QFont.StyleStrategy.PreferQuality)
+        try:
+            app_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+        except Exception:
+            pass
+        self.qt_app.setFont(app_font)
 
     def _apply_styles(self):
         self.setStyleSheet(
             f"""
-            QMainWindow#MainWindow, QWidget#SurfaceRoot, QWidget#PageBody, QWidget#PageContent, QWidget#ScrollViewport {{
+            QWidget {{
+                font-family: "{self.ui_font_family}";
+                color: #eef3f7;
+                background: #20262d;
+            }}
+            QWidget#WindowBar {{
                 background: transparent;
             }}
-            QWidget {{
-                color: rgba(46,38,49,0.96);
-                font-family: '{self.ui_font_family}';
+            QLabel {{
+                background: transparent;
             }}
-            QLabel#WindowTitle {{
-                font-size: 18px;
+            QLabel#AppTitle {{
+                font-size: 28px;
                 font-weight: 700;
+                color: #f7fafc;
             }}
-            QLabel#WindowSubtitle {{
-                color: rgba(104,92,110,0.84);
-                font-size: 11px;
+            QLabel#AppSubtitle, QLabel#MutedText {{
+                color: #aebbc6;
+                font-size: 13px;
             }}
-            QLabel#PageTitle, QLabel#DialogTitle {{
+            QLabel#SideLabel {{
+                color: #aebbc6;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QLabel#SideValue {{
+                color: #f7fafc;
                 font-size: 22px;
                 font-weight: 700;
             }}
-            QLabel#SectionTitle {{
-                font-size: 16px;
+            QLabel#ResourceChip {{
+                background: #26313a;
+                border: 1px solid #3d4a56;
+                border-radius: 6px;
+                padding: 5px 10px;
+                color: #eef3f7;
+                font-size: 13px;
                 font-weight: 700;
             }}
-            QLabel#SectionSub, QLabel#BodyText {{
-                color: rgba(96,86,102,0.92);
-                font-size: 12px;
+            QLabel#MeterLabel {{
+                color: #e8eef3;
+                font-size: 13px;
+                font-weight: 700;
             }}
-            QLabel#MutedText {{
-                color: rgba(122,112,128,0.88);
-                font-size: 11px;
-            }}
-            QLabel#FormLabel {{
-                color: rgba(78,66,84,0.94);
-                font-size: 12px;
-                font-weight: 600;
-            }}
-            QLabel#HeroValue {{
+            QLabel#SectionTitle {{
                 font-size: 18px;
                 font-weight: 700;
+                color: #f7fafc;
             }}
-            QLabel#StatusHeadline {{
+            QLabel#DialogTitle {{
                 font-size: 20px;
                 font-weight: 700;
             }}
-            QFrame#PlainPanel {{
-                background: rgba(255,255,255,0.42);
-                border: 1px solid rgba(255,255,255,0.55);
-                border-radius: 18px;
+            QLabel#StatusTitle {{
+                font-size: 20px;
+                font-weight: 700;
+                color: #f7fafc;
             }}
-            QFrame#PlainPanel[radius="18"] {{
-                border-radius: 18px;
+            QLabel#FormLabel {{
+                color: #d5dee7;
+                font-size: 14px;
+                font-weight: 700;
             }}
-            QFrame#PlainPanel[radius="16"] {{
-                border-radius: 16px;
+            QLabel#ValueLabel {{
+                color: #f7fafc;
+                font-size: 15px;
+                font-weight: 700;
             }}
-            QFrame#PlainPanel[radius="14"] {{
-                border-radius: 14px;
+            QWidget#Transparent {{
+                background: transparent;
             }}
-            QComboBox {{
-                background: rgba(255,255,255,0.62);
-                border: 1px solid rgba(255,255,255,0.72);
-                border-radius: 14px;
-                padding: 10px 12px;
-                min-height: 22px;
+            QFrame#HeroPanel, QFrame#Card {{
+                background: #29323b;
+                border: 1px solid #40505d;
+                border-radius: 8px;
             }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 26px;
+            QFrame#HeroPanel {{
+                border-left: 4px solid #4fa3c7;
             }}
-            QComboBox QAbstractItemView {{
-                background: rgba(250,247,250,0.98);
-                border: 1px solid rgba(255,255,255,0.82);
-                selection-background-color: rgba(244,153,124,0.24);
-                color: rgba(46,38,49,0.96);
-                padding: 6px;
-            }}
-            QListWidget, QPlainTextEdit {{
-                background: rgba(255,255,255,0.44);
-                border: 1px solid rgba(255,255,255,0.70);
-                border-radius: 16px;
-                padding: 10px;
-                selection-background-color: rgba(244,153,124,0.20);
-            }}
-            QListWidget::item {{
-                padding: 8px 10px;
-                border-radius: 10px;
-                margin: 2px 0px;
-            }}
-            QListWidget::item:selected {{
-                background: rgba(244,153,124,0.22);
-            }}
-            QCheckBox {{
-                spacing: 10px;
-                color: rgba(46,38,49,0.96);
-            }}
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
+            QFrame#SideGroup {{
+                background: #26313a;
+                border: 1px solid #40505d;
                 border-radius: 6px;
-                border: 1px solid rgba(255,255,255,0.64);
-                background: rgba(255,255,255,0.50);
             }}
-            QCheckBox::indicator:checked {{
-                background: rgba(244,153,124,0.78);
+            QFrame#BottomBar {{
+                background: #29323b;
+                border: 1px solid #40505d;
+                border-radius: 8px;
             }}
-            QProgressBar {{
-                background: rgba(255,255,255,0.42);
-                border: 1px solid rgba(255,255,255,0.64);
-                border-radius: 11px;
-                min-height: 18px;
-                text-align: center;
-                color: rgba(72,58,76,0.96);
-                font-weight: 700;
+            QFrame#InlinePanel {{
+                background: #242d35;
+                border: 1px solid #3b4854;
+                border-radius: 6px;
             }}
-            QProgressBar::chunk {{
-                border-radius: 10px;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 rgba(244,153,124,0.92),
-                    stop:1 rgba(233,133,173,0.88));
-            }}
-            QPushButton#PrimaryButton {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(244,153,124,0.94),
-                    stop:1 rgba(233,133,173,0.82));
-                border: 1px solid rgba(255,255,255,0.68);
-                border-radius: 15px;
-                padding: 12px 16px;
-                color: rgba(38,24,33,0.96);
-                font-weight: 800;
-            }}
-            QPushButton#PrimaryButton:hover {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 rgba(246,171,141,0.96),
-                    stop:1 rgba(238,149,186,0.86));
-            }}
-            QPushButton#SoftButton {{
-                background: rgba(255,255,255,0.34);
-                border: 1px solid rgba(255,255,255,0.58);
-                border-radius: 15px;
-                padding: 11px 14px;
-                font-weight: 700;
-                color: rgba(58,46,62,0.94);
-            }}
-            QPushButton#SoftButton:hover {{
-                background: rgba(255,255,255,0.48);
-            }}
-            QPushButton#DangerButton {{
-                background: rgba(216,112,112,0.18);
-                border: 1px solid rgba(216,112,112,0.30);
-                border-radius: 15px;
-                padding: 11px 14px;
-                font-weight: 700;
-                color: rgba(112,54,54,0.94);
-            }}
-            QPushButton:disabled {{
-                color: rgba(114,104,120,0.58);
-                background: rgba(255,255,255,0.16);
-                border: 1px solid rgba(255,255,255,0.32);
-            }}
-            QScrollArea {{
+            QScrollArea, QScrollArea > QWidget > QWidget {{
                 background: transparent;
                 border: none;
+            }}
+            QComboBox {{
+                color: #f7fafc;
+                background: #1f2830;
+                border: 1px solid #546574;
+                border-radius: 6px;
+                padding: 7px 32px 7px 11px;
+                min-height: 20px;
+                font-size: 14px;
+            }}
+            QComboBox:hover {{
+                border-color: #4fa3c7;
+            }}
+            QComboBox:focus {{
+                border: 1px solid #67b8d7;
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 26px;
+                border-left: 1px solid #40505d;
+                background: #26313a;
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 6px;
+            }}
+            QComboBox QAbstractItemView {{
+                color: #f7fafc;
+                background: #1f2830;
+                border: 1px solid #546574;
+                selection-background-color: #2f6f91;
+                selection-color: #ffffff;
+                outline: 0;
+            }}
+            QLineEdit {{
+                color: #f7fafc;
+                background: #1f2830;
+                border: 1px solid #546574;
+                border-radius: 6px;
+                padding: 7px 11px;
+                min-height: 20px;
+                font-size: 14px;
+                selection-background-color: #2f6f91;
+            }}
+            QLineEdit:disabled {{
+                color: #84919d;
+                background: #26313a;
+                border-color: #36434e;
+            }}
+            QSpinBox, QDoubleSpinBox {{
+                color: #f7fafc;
+                background: #1f2830;
+                border: 1px solid #546574;
+                border-radius: 6px;
+                padding: 5px 8px;
+                min-height: 20px;
+                font-size: 14px;
+                selection-background-color: #2f6f91;
+            }}
+            QSpinBox::up-button, QSpinBox::down-button,
+            QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
+                width: 14px;
+                background: #26313a;
+                border-left: 1px solid #40505d;
+            }}
+            QListWidget, QPlainTextEdit {{
+                color: #eef3f7;
+                background: #1f2830;
+                border: 1px solid #40505d;
+                border-radius: 6px;
+                selection-background-color: #2f6f91;
+                selection-color: #ffffff;
+                font-size: 14px;
+            }}
+            QListWidget::item {{
+                padding: 8px;
+                border-radius: 4px;
+            }}
+            QListWidget::item:selected {{
+                background: #2f6f91;
+            }}
+            QPushButton {{
+                color: #eef3f7;
+                background: #26313a;
+                border: 1px solid #546574;
+                border-radius: 6px;
+                padding: 8px 13px;
+                font-weight: 700;
+                min-height: 22px;
+                font-size: 14px;
+            }}
+            QPushButton#CompactButton {{
+                padding: 0px 10px;
+                min-height: 18px;
+            }}
+            QPushButton:hover {{
+                background: #303b45;
+                border-color: #4fa3c7;
+            }}
+            QPushButton:disabled {{
+                color: #7e8a94;
+                background: #26313a;
+                border-color: #36434e;
+            }}
+            QPushButton#PrimaryButton {{
+                color: #ffffff;
+                background: #347fa6;
+                border-color: #4fa3c7;
+            }}
+            QPushButton#PrimaryButton:hover {{
+                background: #4092bd;
+            }}
+            QPushButton#DangerButton {{
+                color: #f4f7fa;
+                background: #34414d;
+                border-color: #627381;
+            }}
+            QPushButton#BottomPrimary {{
+                color: #ffffff;
+                background: #347fa6;
+                border: 1px solid #4fa3c7;
+                border-radius: 6px;
+                padding: 0px;
+                min-height: 0px;
+                font-weight: 700;
+            }}
+            QPushButton#BottomDanger {{
+                color: #f4f7fa;
+                background: #34414d;
+                border: 1px solid #627381;
+                border-radius: 6px;
+                padding: 0px;
+                min-height: 0px;
+                font-weight: 700;
+            }}
+            QPushButton#BottomButton {{
+                color: #eef3f7;
+                background: #26313a;
+                border: 1px solid #546574;
+                border-radius: 6px;
+                padding: 0px;
+                min-height: 0px;
+                font-weight: 700;
+            }}
+            QPushButton#ChipButton {{
+                min-width: 64px;
+            }}
+            QPushButton#ChipButton:checked {{
+                color: #ffffff;
+                background: #347fa6;
+                border-color: #4fa3c7;
+            }}
+            QPushButton#WindowButton {{
+                font-size: 14px;
+                font-weight: 700;
+                min-height: 0px;
+                padding: 0px;
+                border-radius: 6px;
+                background: transparent;
+                border: 1px solid transparent;
+                color: #d5dee7;
+            }}
+            QPushButton#WindowButton:hover {{
+                background: #303b45;
+                border-color: #546574;
+            }}
+            QCheckBox {{
+                background: transparent;
+                spacing: 8px;
+                font-weight: 700;
+                font-size: 14px;
+            }}
+            QCheckBox::indicator {{
+                width: 17px;
+                height: 17px;
+                border-radius: 4px;
+                border: 1px solid #546574;
+                background: #1f2830;
+            }}
+            QCheckBox::indicator:checked {{
+                background: #6f8799;
+                border-color: #8aa1b1;
+            }}
+            QProgressBar {{
+                background: #1f2830;
+                border: 1px solid #546574;
+                border-radius: 6px;
+                min-height: 22px;
+                text-align: center;
+                font-weight: 700;
+                color: #f7fafc;
+                font-size: 14px;
+            }}
+            QProgressBar::chunk {{
+                background: #4fa3c7;
+                border-radius: 5px;
+            }}
+            QProgressBar#ResourceMeter {{
+                background: #202830;
+                border: 1px solid #435360;
+                min-height: 22px;
+            }}
+            QProgressBar#ResourceMeter::chunk {{
+                background: #6f96ac;
+                border-radius: 5px;
             }}
             QScrollBar:vertical {{
                 background: transparent;
@@ -827,493 +738,574 @@ class SubtitleGUI(QMainWindow):
                 margin: 2px;
             }}
             QScrollBar::handle:vertical {{
-                background: rgba(172,160,179,0.55);
+                background: #b7c4d4;
                 border-radius: 6px;
-                min-height: 24px;
+                min-height: 28px;
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                height: 0px;
                 background: transparent;
                 border: none;
-                height: 0px;
             }}
             """
         )
 
     def _build_ui(self):
-        surface = BackdropSurface()
-        surface.setObjectName("SurfaceRoot")
-        self.setCentralWidget(surface)
+        root_widget = QWidget()
+        self.setCentralWidget(root_widget)
 
-        root = QVBoxLayout(surface)
-        root.setContentsMargins(18, 18, 18, 18)
+        root = QVBoxLayout(root_widget)
+        root.setContentsMargins(24, 8, 24, 20)
         root.setSpacing(12)
 
-        self.title_bar = TitleBar(self)
-        self.title_bar.menu_btn.hide()
-        root.addWidget(self.title_bar)
+        self.window_bar = WindowBar(self)
+        root.addWidget(self.window_bar)
 
-        self.tab_shell = DraggableGlassPanel(self, radius=24)
-        self.tab_shell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        tab_layout = QHBoxLayout(self.tab_shell)
-        tab_layout.setContentsMargins(18, 14, 18, 14)
-        tab_layout.setSpacing(10)
-        tab_layout.addStretch(1)
-        self.nav_buttons = []
-        for text_label, index in [("설정", 0), ("실행", 1)]:
-            btn = SegmentedTabButton(text_label)
-            btn.clicked.connect(lambda checked=False, idx=index: self._switch_page(idx))
-            tab_layout.addWidget(btn)
-            self.nav_buttons.append(btn)
-        tab_layout.addStretch(1)
-        build_label = QLabel(f"v{APP_VERSION}")
-        build_label.setObjectName("MutedText")
-        build_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        tab_layout.addWidget(build_label, 0, Qt.AlignmentFlag.AlignRight)
-        root.addWidget(self.tab_shell)
+        header = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title_box.setSpacing(2)
+        title = QLabel("Whisper Studio")
+        title.setObjectName("AppTitle")
+        subtitle = QLabel("오디오와 영상 파일을 전사하고 자막 파일로 저장합니다.")
+        subtitle.setObjectName("AppSubtitle")
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        header.addLayout(title_box, 1)
+        root.addLayout(header)
 
-        self.stack = QStackedWidget()
-        root.addWidget(self.stack, 1)
-
-        self.stack.addWidget(self._build_settings_page())
-        self.stack.addWidget(self._build_activity_page())
-
-        self.footer_panel = FrostedPanel(radius=26)
-        self.footer_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        root.addWidget(self.footer_panel)
-        self._build_footer(self.footer_panel)
-
-        self._switch_page(0)
-
-    def _page_shell(self, title: str, subtitle: str) -> tuple[QWidget, QVBoxLayout]:
-        body = QWidget()
-        body.setObjectName("PageBody")
-        body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        body.setAutoFillBackground(False)
-        body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(12)
-
-        head = FrostedPanel(radius=26)
-        head_layout = QVBoxLayout(head)
-        head_layout.setContentsMargins(22, 20, 22, 20)
-        head_layout.setSpacing(4)
-        title_label = QLabel(title)
-        title_label.setObjectName("PageTitle")
-        subtitle_label = QLabel(subtitle)
-        subtitle_label.setObjectName("SectionSub")
-        subtitle_label.setWordWrap(True)
-        head_layout.addWidget(title_label)
-        head_layout.addWidget(subtitle_label)
-        body_layout.addWidget(head)
-
-        content = QWidget()
-        content.setObjectName("PageContent")
-        content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        content.setAutoFillBackground(False)
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(12)
-        body_layout.addWidget(content, 1)
+        hero = QGridLayout()
+        hero.setHorizontalSpacing(12)
+        hero.setVerticalSpacing(12)
+        hero.setColumnStretch(0, 1)
+        hero.setColumnStretch(1, 1)
+        hero.setColumnStretch(2, 1)
+        self.quick_lang_value = self._hero_metric("언어", "-")
+        self.quick_model_value = self._hero_metric("모델", "-")
+        self.quick_preset_value = self._hero_metric("프리셋", "-")
+        hero.addWidget(self.quick_lang_value.parentWidget(), 0, 0)
+        hero.addWidget(self.quick_model_value.parentWidget(), 0, 1)
+        hero.addWidget(self.quick_preset_value.parentWidget(), 0, 2)
+        root.addLayout(hero)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        scroll.setStyleSheet("background: transparent;")
-        scroll.viewport().setObjectName("ScrollViewport")
-        scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        scroll.viewport().setStyleSheet("background: transparent;")
-        scroll.setWidget(body)
-        return scroll, content_layout
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        root.addWidget(scroll, 1)
 
-    def _build_home_page(self):
-        return self._build_activity_page()
+        content = QWidget()
+        scroll.setWidget(content)
+        grid = QGridLayout(content)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(16)
+        grid.setColumnStretch(0, 5)
+        grid.setColumnStretch(1, 3)
 
-    def _build_settings_page(self):
-        page, layout = self._page_shell(
-            "전사 설정",
-            "전사에 대한 다양한 설정을 제공합니다. 전사 언어, 프리셋, 음성 보정, 출력 형식 등을 조정할 수 있습니다. 추가적인 세부 설정은 버튼을 눌러서 확인하십시오.",
-        )
+        right_stack = QWidget()
+        right_layout = QVBoxLayout(right_stack)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(12)
+        right_layout.addWidget(self._build_settings_card())
+        right_layout.addWidget(self._build_system_card())
+        right_layout.addWidget(self._build_options_card())
 
-        top_grid = QGridLayout()
-        top_grid.setHorizontalSpacing(12)
-        top_grid.setVerticalSpacing(12)
-        layout.addLayout(top_grid)
+        grid.addWidget(self._build_input_card(), 0, 0)
+        grid.addWidget(right_stack, 0, 1)
+        grid.addWidget(self._build_log_card(), 1, 0, 1, 2)
 
-        input_card = FrostedPanel(radius=26)
-        input_layout = QVBoxLayout(input_card)
-        input_layout.setContentsMargins(22, 20, 22, 20)
-        input_layout.setSpacing(12)
-        self._section_header(input_layout, "입력 파일", "한 개 또는 여러 개의 오디오/비디오 파일을 선택할 수 있습니다. 결과는 각 원본 파일과 같은 폴더에 저장됩니다.")
+        root.addWidget(self._build_bottom_bar())
 
-        file_btn_row = QHBoxLayout()
+    def _normalize_control_sizes(self):
+        for combo in [self.language_combo, self.model_combo, self.preset_combo]:
+            combo.setFixedHeight(40)
+        for btn in [self.settings_download_model_btn, self.output_dir_btn]:
+            btn.setFixedHeight(40)
+        self.output_dir_edit.setFixedHeight(40)
+        for btn in [self.start_btn, self.cancel_btn, self.open_result_btn, self.open_folder_btn]:
+            btn.setMinimumSize(110, 40)
+            btn.setMaximumHeight(40)
+        if hasattr(self, "resource_refresh_btn"):
+            self.resource_refresh_btn.setMinimumSize(96, 34)
+            self.resource_refresh_btn.setMaximumHeight(34)
+        if hasattr(self, "resource_state_btn"):
+            self.resource_state_btn.setMinimumSize(86, 34)
+            self.resource_state_btn.setMaximumHeight(34)
+        if hasattr(self, "system_details_btn"):
+            self.system_details_btn.setMinimumSize(66, 34)
+            self.system_details_btn.setMaximumHeight(34)
+
+    def _build_bottom_bar(self) -> QWidget:
+        bar = QFrame()
+        bar.setObjectName("BottomBar")
+        layout = QGridLayout(bar)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setHorizontalSpacing(14)
+        layout.setVerticalSpacing(6)
+        layout.setColumnStretch(0, 3)
+        layout.setColumnStretch(1, 2)
+
+        self.footer_status_label = QLabel("준비됨")
+        self.footer_status_label.setObjectName("StatusTitle")
+        self.footer_transfer_label = QLabel("파일을 선택하면 시작할 수 있습니다.")
+        self.footer_transfer_label.setObjectName("MutedText")
+        self.activity_preprocess_label = QLabel("")
+        self.activity_preprocess_label.setObjectName("MutedText")
+        self.activity_preprocess_label.setVisible(False)
+        for label in [self.footer_status_label, self.footer_transfer_label, self.activity_preprocess_label]:
+            label.setVisible(False)
+
+        progress_box = QVBoxLayout()
+        progress_box.setSpacing(4)
+        self.footer_meta_label = QLabel("")
+        self.footer_meta_label.setObjectName("MutedText")
+        self.footer_meta_label.setVisible(False)
+        self.footer_progress = QProgressBar()
+        self.footer_progress.setRange(0, 100)
+        self.footer_progress.setValue(0)
+        self.footer_progress.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.footer_progress.setFixedHeight(34)
+        self.activity_progress = self.footer_progress
+        progress_box.addWidget(self.footer_progress)
+        layout.addLayout(progress_box, 0, 0, 1, 2)
+
+        resource_line = QWidget()
+        resource_row = QHBoxLayout(resource_line)
+        resource_row.setContentsMargins(0, 0, 0, 0)
+        resource_row.setSpacing(8)
+        self.cpu_meter = self._resource_meter("CPU")
+        self.ram_meter = self._resource_meter("RAM")
+        self.vram_meter = self._resource_meter("VRAM")
+        for meter in [self.cpu_meter, self.ram_meter, self.vram_meter]:
+            resource_row.addWidget(meter, 1)
+        self.resource_state_btn = self._make_button("상태 확인 중", self.show_system_details)
+        self.resource_state_btn.setObjectName("CompactButton")
+        self.resource_state_btn.setMinimumSize(86, 34)
+        self.resource_refresh_btn = self._make_button("자원 갱신", self.refresh_live_resource_now)
+        self.resource_refresh_btn.setObjectName("CompactButton")
+        self.resource_refresh_btn.setMinimumSize(96, 34)
+        self.system_details_btn = self._make_button("상세", self.show_system_details)
+        self.system_details_btn.setObjectName("CompactButton")
+        self.system_details_btn.setMinimumSize(66, 34)
+        resource_row.addWidget(self.resource_state_btn)
+        resource_row.addWidget(self.resource_refresh_btn)
+        resource_row.addWidget(self.system_details_btn)
+        layout.addWidget(resource_line, 1, 0, 1, 2)
+
+        self.start_btn = self._make_button("전사 시작", self.start_transcription, primary=True)
+        self.cancel_btn = self._make_button("취소", self._cancel_current_task, danger=True)
+        self.open_result_btn = self._make_button("결과 열기", self.open_result)
+        self.open_folder_btn = self._make_button("폴더 열기", self.open_result_folder)
+        self.start_btn.setObjectName("BottomPrimary")
+        self.cancel_btn.setObjectName("BottomDanger")
+        self.open_result_btn.setObjectName("BottomButton")
+        self.open_folder_btn.setObjectName("BottomButton")
+        self.cancel_btn.setEnabled(False)
+        self.open_result_btn.setEnabled(False)
+        self.open_folder_btn.setEnabled(False)
+        self.home_start_btn = self.start_btn
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        for btn in [self.start_btn, self.cancel_btn, self.open_result_btn, self.open_folder_btn]:
+            btn.setMinimumSize(110, 40)
+            btn.setMaximumHeight(40)
+            actions.addWidget(btn)
+        layout.addLayout(actions, 0, 2, 2, 1)
+
+        self.activity_status_label = self.footer_status_label
+        self.activity_status_meta_label = self.footer_transfer_label
+        self.activity_job_meta_label = self.footer_meta_label
+        return bar
+
+    def _small_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("FormLabel")
+        return label
+
+    def _sidebar_value(self, layout: QVBoxLayout, label_text: str) -> QLabel:
+        label = QLabel(label_text)
+        label.setObjectName("SideLabel")
+        value = QLabel("-")
+        value.setObjectName("SideValue")
+        value.setWordWrap(True)
+        layout.addWidget(label)
+        layout.addWidget(value)
+        return value
+
+    def _hero_metric(self, label_text: str, value_text: str) -> QLabel:
+        panel = QFrame()
+        panel.setObjectName("HeroPanel")
+        panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(5)
+        label = QLabel(label_text)
+        label.setObjectName("SideLabel")
+        value = QLabel(value_text)
+        value.setObjectName("SideValue")
+        value.setWordWrap(True)
+        layout.addWidget(label)
+        layout.addWidget(value)
+        value._metric_panel = panel
+        return value
+
+    def _mini_value(self, label_text: str, value_text: str) -> QLabel:
+        panel = QFrame()
+        panel.setObjectName("InlinePanel")
+        panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(3)
+        label = QLabel(label_text)
+        label.setObjectName("SideLabel")
+        value = QLabel(value_text)
+        value.setObjectName("ValueLabel")
+        value.setWordWrap(True)
+        layout.addWidget(label)
+        layout.addWidget(value)
+        value._metric_panel = panel
+        return value
+
+    def _resource_meter(self, name: str) -> QProgressBar:
+        meter = QProgressBar()
+        meter.setObjectName("ResourceMeter")
+        meter.setRange(0, 100)
+        meter.setValue(0)
+        meter.setFormat(f"{name} --")
+        meter.setTextVisible(True)
+        meter.setFixedHeight(28)
+        return meter
+
+    def _build_input_card(self) -> QWidget:
+        card, layout = self._card("입력 파일", "")
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
         self.pick_file_btn = self._make_button("파일 선택", self.browse_input_files, primary=True)
-        self.add_file_btn = self._make_button("여러 파일 추가", self.add_more_input_files)
+        self.add_file_btn = self._make_button("파일 추가", self.add_more_input_files)
         self.remove_file_btn = self._make_button("선택 제거", self.remove_selected_input_files)
-        self.clear_file_btn = self._make_button("목록 지우기", self.clear_input_files, danger=True)
-        for widget in [self.pick_file_btn, self.add_file_btn, self.remove_file_btn, self.clear_file_btn]:
-            file_btn_row.addWidget(widget)
-        file_btn_row.addStretch(1)
-        input_layout.addLayout(file_btn_row)
+        self.clear_file_btn = self._make_button("목록 비우기", self.clear_input_files, danger=True)
+        for btn in [self.pick_file_btn, self.add_file_btn, self.remove_file_btn, self.clear_file_btn]:
+            row.addWidget(btn)
+        row.addStretch(1)
+        layout.addLayout(row)
 
         self.file_summary_label = QLabel("선택된 파일이 없습니다.")
-        self.file_summary_label.setObjectName("BodyText")
+        self.file_summary_label.setObjectName("MutedText")
         self.file_summary_label.setWordWrap(True)
-        input_layout.addWidget(self.file_summary_label)
+        self.file_summary_label.setVisible(False)
+
+        output_panel = QFrame()
+        output_panel.setObjectName("InlinePanel")
+        output_panel.setMinimumHeight(48)
+        output_layout = QGridLayout(output_panel)
+        output_layout.setContentsMargins(10, 7, 10, 7)
+        output_layout.setHorizontalSpacing(8)
+        output_layout.setVerticalSpacing(4)
+        self.use_source_folder_check = QCheckBox("원본 폴더에 저장")
+        self.use_source_folder_check.setChecked(True)
+        self.use_source_folder_check.stateChanged.connect(self._on_output_folder_mode_changed)
+        self.output_dir_edit = QLineEdit()
+        self.output_dir_edit.setPlaceholderText("출력 폴더를 따로 지정할 때만 사용")
+        self.output_dir_edit.setEnabled(False)
+        self.output_dir_edit.textChanged.connect(self._on_output_dir_text_changed)
+        self.output_dir_btn = self._make_button("폴더 선택", self.browse_output_dir)
+        self.output_dir_btn.setObjectName("CompactButton")
+        self.output_dir_btn.setEnabled(False)
+        for widget in [self.output_dir_edit, self.output_dir_btn]:
+            policy = widget.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            widget.setSizePolicy(policy)
+        output_layout.addWidget(self.use_source_folder_check, 0, 0)
+        output_layout.addWidget(self.output_dir_edit, 0, 1)
+        output_layout.addWidget(self.output_dir_btn, 0, 2)
+        self.output_dir_edit.setFixedHeight(40)
+        self.output_dir_btn.setFixedHeight(40)
+        layout.addWidget(output_panel)
 
         self.file_list = QListWidget()
-        self.file_list.setMinimumHeight(220)
+        self.file_list.setMinimumHeight(230)
         self.file_list.itemDoubleClicked.connect(lambda _item: self.remove_selected_input_files())
-        input_layout.addWidget(self.file_list)
+        layout.addWidget(self.file_list)
+        return card
 
-        top_grid.addWidget(input_card, 0, 0, 1, 2)
+    def _build_settings_card(self) -> QWidget:
+        card, layout = self._card("전사 설정", "")
 
-        basic_card = FrostedPanel(radius=26)
-        basic_layout = QVBoxLayout(basic_card)
-        basic_layout.setContentsMargins(22, 20, 22, 20)
-        basic_layout.setSpacing(12)
-        self._section_header(basic_layout, "전사 설정", "전사 언어, 프리셋, 모델을 선택합니다.")
-
-        self.language_combo = QComboBox()
-        for code, name in LANGUAGE_OPTIONS:
+        self.language_combo = CleanComboBox()
+        for code, name in LANGUAGE_LABELS:
             self.language_combo.addItem(f"{name} · {code}", code)
+        self._configure_combo(self.language_combo, 16)
         self.language_combo.currentIndexChanged.connect(self._refresh_selection_hints)
-        self._form_row(basic_layout, "언어", self.language_combo)
 
-        self.model_combo = QComboBox()
-        for entry in MODEL_CATALOG:
-            self.model_combo.addItem(f"{entry['label']} · {entry['short_note']}", entry["id"])
-        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-        self._form_row(basic_layout, "모델", self.model_combo)
-
-        self.preset_combo = QComboBox()
+        self.preset_combo = CleanComboBox()
         for preset in TRANSCRIPTION_PRESETS:
-            self.preset_combo.addItem(f"{preset['label']} · {preset['short_note']}", preset["id"])
-        self.preset_combo.currentIndexChanged.connect(self._refresh_selection_hints)
-        self._form_row(basic_layout, "프리셋", self.preset_combo)
+            preset_id = preset["id"]
+            self.preset_combo.addItem(PRESET_LABELS.get(preset_id, preset_id), preset_id)
+        self._configure_combo(self.preset_combo, 16)
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
 
-        rec_box = PlainPanel(radius=18)
-        rec_inner = QVBoxLayout(rec_box)
-        rec_inner.setContentsMargins(16, 14, 16, 14)
-        rec_inner.setSpacing(8)
-        title = QLabel("자동 권장 설정")
-        title.setObjectName("FormLabel")
-        self.recommendation_summary_label = QLabel("파일을 선택하면 권장 설정을 제안합니다.")
-        self.recommendation_summary_label.setObjectName("BodyText")
-        self.recommendation_summary_label.setWordWrap(True)
-        self.recommendation_meta_label = QLabel("")
-        self.recommendation_meta_label.setObjectName("MutedText")
-        self.recommendation_meta_label.setWordWrap(True)
-        rec_btn_row = QHBoxLayout()
-        self.apply_rec_btn = self._make_button("권장값 적용", self.apply_recommendations)
-        rec_btn_row.addWidget(self.apply_rec_btn)
-        rec_btn_row.addStretch(1)
-        rec_inner.addWidget(title)
-        rec_inner.addWidget(self.recommendation_summary_label)
-        rec_inner.addWidget(self.recommendation_meta_label)
-        rec_inner.addLayout(rec_btn_row)
-        basic_layout.addWidget(rec_box)
-        top_grid.addWidget(basic_card, 1, 0)
+        top_grid = QGridLayout()
+        top_grid.setHorizontalSpacing(10)
+        top_grid.setVerticalSpacing(6)
+        top_grid.addWidget(self._small_label("언어"), 0, 0)
+        top_grid.addWidget(self._small_label("프리셋"), 0, 1)
+        top_grid.addWidget(self.language_combo, 1, 0)
+        top_grid.addWidget(self.preset_combo, 1, 1)
+        layout.addLayout(top_grid)
 
-        device_card = FrostedPanel(radius=26)
-        device_layout = QVBoxLayout(device_card)
-        device_layout.setContentsMargins(22, 20, 22, 20)
-        device_layout.setSpacing(12)
-        self._section_header(device_layout, "장치 선호", "GPU와 CPU 중 사용 가능한 환경을 자동으로 선택하거나 고정할 수 있습니다.")
-        self.device_note_label = QLabel("")
-        self.device_note_label.setObjectName("BodyText")
-        self.device_note_label.setWordWrap(True)
-        device_layout.addWidget(self.device_note_label)
-        chip_row = QHBoxLayout()
+        self.preset_detail_label = QLabel("")
+        self.preset_detail_label.setObjectName("MutedText")
+        self.preset_detail_label.setWordWrap(True)
+        layout.addWidget(self.preset_detail_label)
+
+        preset_controls = QFrame()
+        preset_controls.setObjectName("InlinePanel")
+        preset_grid = QGridLayout(preset_controls)
+        preset_grid.setContentsMargins(10, 8, 10, 8)
+        preset_grid.setHorizontalSpacing(8)
+        preset_grid.setVerticalSpacing(6)
+        self.custom_beam_spin = QSpinBox()
+        self.custom_beam_spin.setRange(1, 8)
+        self.custom_vad_speech_spin = QSpinBox()
+        self.custom_vad_speech_spin.setRange(80, 800)
+        self.custom_vad_speech_spin.setSingleStep(10)
+        self.custom_vad_silence_spin = QSpinBox()
+        self.custom_vad_silence_spin.setRange(200, 2500)
+        self.custom_vad_silence_spin.setSingleStep(50)
+        self.custom_repetition_spin = QDoubleSpinBox()
+        self.custom_repetition_spin.setRange(1.0, 1.3)
+        self.custom_repetition_spin.setSingleStep(0.01)
+        self.custom_repetition_spin.setDecimals(2)
+        for col, (label_text, widget) in enumerate(
+            [
+                ("Beam", self.custom_beam_spin),
+                ("말소리", self.custom_vad_speech_spin),
+                ("무음", self.custom_vad_silence_spin),
+                ("반복 억제", self.custom_repetition_spin),
+            ]
+        ):
+            preset_grid.addWidget(self._small_label(label_text), 0, col)
+            preset_grid.addWidget(widget, 1, col)
+            widget.setFixedHeight(32)
+            widget.valueChanged.connect(self._on_custom_preset_changed)
+        layout.addWidget(preset_controls)
+
+        self.model_combo = CleanComboBox()
+        for entry in MODEL_CATALOG:
+            self.model_combo.addItem(entry["label"], entry["id"])
+        self._configure_combo(self.model_combo, 18)
+        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
+
+        model_row = QHBoxLayout()
+        model_row.setSpacing(10)
+        model_row.addWidget(self.model_combo, 1)
+        self.settings_download_model_btn = self._make_button("모델 다운로드", self.start_model_download)
+        self.settings_download_model_btn.setMinimumWidth(132)
+        model_row.addWidget(self.settings_download_model_btn)
+        model_wrap = QWidget()
+        model_wrap.setObjectName("Transparent")
+        model_wrap.setLayout(model_row)
+        self.settings_download_model_btn.setFixedHeight(40)
+        self._form_row(layout, "모델", model_wrap)
+
+        model_state = QFrame()
+        model_state.setObjectName("Transparent")
+        self.model_state_panel = model_state
+        model_state_layout = QHBoxLayout(model_state)
+        model_state_layout.setContentsMargins(10, 8, 10, 8)
+        model_state_layout.setSpacing(10)
+        self.model_state_badge = QLabel("확인 중")
+        self.model_status_summary_label = QLabel("")
+        self.model_status_summary_label.setObjectName("MutedText")
+        self.model_status_summary_label.setWordWrap(True)
+        self.model_cache_path_label = QLabel("")
+        self.model_cache_path_label.setObjectName("MutedText")
+        self.model_cache_path_label.setWordWrap(True)
+        model_text = QVBoxLayout()
+        model_text.setSpacing(2)
+        model_text.addWidget(self.model_cache_path_label)
+        self.model_detail_btn = self._make_button("위치", self.toggle_model_details)
+        self.model_detail_btn.setObjectName("CompactButton")
+        self.model_detail_btn.setFixedSize(64, 34)
+        model_state_layout.addWidget(self.model_state_badge)
+        model_state_layout.addLayout(model_text, 1)
+        model_state_layout.addWidget(self.model_detail_btn)
+        layout.addWidget(model_state)
+        self.model_cache_path_label.setVisible(False)
+
+        self.download_model_btn = self.settings_download_model_btn
+
+        return card
+
+    def _build_options_card(self) -> QWidget:
+        card, layout = self._card("실행 옵션", "")
+
+        self.quick_device_value = QLabel("")
+        self.quick_audio_value = QLabel("")
+        self.quick_output_value = QLabel("")
+
         self.device_buttons = {}
-        for text_label, value in [("자동", "auto"), ("GPU", "cuda"), ("CPU", "cpu")]:
-            btn = ChipButton(text_label)
-            btn.clicked.connect(lambda checked=False, v=value: self._set_preferred_device(v))
+        self.device_group = QButtonGroup(self)
+        self.device_group.setExclusive(True)
+        device_row = QHBoxLayout()
+        device_row.setSpacing(8)
+        for text, value in [("자동", "auto"), ("GPU", "cuda"), ("CPU", "cpu")]:
+            btn = self._make_chip(text, lambda checked=False, v=value: self._set_preferred_device(v))
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self.device_buttons[value] = btn
-            chip_row.addWidget(btn)
-        chip_row.addStretch(1)
-        device_layout.addLayout(chip_row)
+            self.device_group.addButton(btn)
+            device_row.addWidget(btn)
+        layout.addWidget(self._small_label("장치 선호"))
+        layout.addLayout(device_row)
 
-        device_action_row = QHBoxLayout()
-        self.system_check_btn = self._make_button("시스템 점검", self.start_system_check)
-        self.save_settings_btn = self._make_button("설정 저장", self.save_ui_settings, primary=True)
-        device_action_row.addWidget(self.system_check_btn)
-        device_action_row.addWidget(self.save_settings_btn)
-        device_action_row.addStretch(1)
-        device_layout.addLayout(device_action_row)
-        top_grid.addWidget(device_card, 1, 1)
-
-        audio_card = FrostedPanel(radius=26)
-        audio_layout = QVBoxLayout(audio_card)
-        audio_layout.setContentsMargins(22, 20, 22, 20)
-        audio_layout.setSpacing(12)
-        self._section_header(audio_layout, "음성 보정", "보정은 전처리 단계에서만 적용됩니다. 표준은 일반 음성, 강함은 소음이 큰 녹음에 권장합니다.")
-        audio_chip_row = QHBoxLayout()
         self.audio_buttons = {}
-        for text_label, value in [("끔", "off"), ("표준", "standard"), ("강함", "strong")]:
-            btn = ChipButton(text_label)
-            btn.clicked.connect(lambda checked=False, v=value: self._set_audio_enhance_level(v))
+        self.audio_group = QButtonGroup(self)
+        self.audio_group.setExclusive(True)
+        audio_row = QHBoxLayout()
+        audio_row.setSpacing(8)
+        for text, value in [("끔", "off"), ("표준", "standard"), ("강함", "strong")]:
+            btn = self._make_chip(text, lambda checked=False, v=value: self._set_audio_enhance_level(v))
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             self.audio_buttons[value] = btn
-            audio_chip_row.addWidget(btn)
-        audio_chip_row.addStretch(1)
-        audio_layout.addLayout(audio_chip_row)
-        top_grid.addWidget(audio_card, 2, 0)
+            self.audio_group.addButton(btn)
+            audio_row.addWidget(btn)
+        layout.addWidget(self._small_label("음성 보정"))
+        layout.addLayout(audio_row)
 
-        output_card = FrostedPanel(radius=26)
-        output_layout = QVBoxLayout(output_card)
-        output_layout.setContentsMargins(22, 20, 22, 20)
-        output_layout.setSpacing(12)
-        self._section_header(output_layout, "출력 형식", "SRT는 기본 자막, TXT는 문장 모음, VTT는 웹/영상 플레이어 연동에 적합합니다.")
-        output_box = QWidget()
-        output_row = QHBoxLayout(output_box)
-        output_row.setContentsMargins(0, 0, 0, 0)
+        output_panel = QFrame()
+        output_panel.setObjectName("InlinePanel")
+        output_row = QHBoxLayout(output_panel)
+        output_row.setContentsMargins(10, 8, 10, 8)
         output_row.setSpacing(18)
         self.output_fmt_srt = QCheckBox("SRT")
         self.output_fmt_txt = QCheckBox("TXT")
         self.output_fmt_vtt = QCheckBox("VTT")
         for cb in [self.output_fmt_srt, self.output_fmt_txt, self.output_fmt_vtt]:
             cb.stateChanged.connect(self._refresh_selection_hints)
+            cb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             output_row.addWidget(cb)
-        output_row.addStretch(1)
-        output_layout.addWidget(output_box)
-        top_grid.addWidget(output_card, 2, 1)
+        layout.addWidget(self._small_label("출력 형식"))
+        layout.addWidget(output_panel)
 
-        return page
+        self.device_note_label = QLabel("")
+        self.device_note_label.setObjectName("MutedText")
+        self.device_note_label.setWordWrap(True)
+        self.device_note_label.setVisible(False)
 
-    def _build_activity_page(self):
-        page, layout = self._page_shell(
-            "진행 상태",
-            "현재 단계, 진행률, 작업 로그, 장치 및 자원 상태를 확인할 수 있습니다.",
-        )
+        self.options_health_badge = QLabel("대기")
+        self.options_health_title = QLabel("환경 점검 대기")
+        self.options_health_detail = QLabel("모델과 장치 설정을 바꾸면 실행 환경을 자동으로 점검합니다.")
+        for hidden in [self.options_health_badge, self.options_health_title, self.options_health_detail]:
+            hidden.setVisible(False)
 
-        top_grid = QGridLayout()
-        top_grid.setHorizontalSpacing(12)
-        top_grid.setVerticalSpacing(12)
-        layout.addLayout(top_grid)
+        return card
 
-        start_card = FrostedPanel(radius=26)
-        start_layout = QVBoxLayout(start_card)
-        start_layout.setContentsMargins(22, 20, 22, 20)
-        start_layout.setSpacing(10)
-        self._section_header(start_layout, "전사 시작", "입력 파일과 설정을 확인한 뒤 전사를 시작합니다.")
-        self.launch_status_label = QLabel("준비됨")
-        self.launch_status_label.setObjectName("StatusHeadline")
-        self.launch_status_label.setWordWrap(True)
-        self.launch_meta_label = QLabel("전사할 파일과 실행 설정을 확인하십시오.")
-        self.launch_meta_label.setObjectName("BodyText")
-        self.launch_meta_label.setWordWrap(True)
-        start_layout.addWidget(self.launch_status_label)
-        start_layout.addWidget(self.launch_meta_label)
-        start_btn_row = QHBoxLayout()
-        self.home_start_btn = self._make_button("전사 시작", self.start_transcription, primary=True)
-        self.home_activity_btn = self._make_button("설정 보기", lambda: self._switch_page(0))
-        self.execution_save_btn = self._make_button("설정 저장", self.save_ui_settings)
-        start_btn_row.addWidget(self.home_start_btn)
-        start_btn_row.addWidget(self.home_activity_btn)
-        start_btn_row.addWidget(self.execution_save_btn)
-        start_btn_row.addStretch(1)
-        start_layout.addLayout(start_btn_row)
-        top_grid.addWidget(start_card, 0, 0)
+    def _build_system_card(self) -> QWidget:
+        card, layout = self._card("전사 환경", "")
+        self.system_overview_title = QLabel("점검 대기")
+        self.system_overview_title.setObjectName("StatusTitle")
+        self.system_overview_meta = QLabel("모델 · 엔진 · 장치 · 런타임")
+        self.system_overview_meta.setObjectName("MutedText")
+        self.system_overview_meta.setWordWrap(True)
+        layout.addWidget(self.system_overview_title)
+        layout.addWidget(self.system_overview_meta)
 
-        quick_card = FrostedPanel(radius=26)
-        quick_layout = QVBoxLayout(quick_card)
-        quick_layout.setContentsMargins(22, 20, 22, 20)
-        quick_layout.setSpacing(10)
-        self._section_header(quick_layout, "현재 구성", "가장 중요한 실행 설정만 요약합니다.")
-        self.quick_lang_value = self._metric_row(quick_layout, "언어")
-        self.quick_model_value = self._metric_row(quick_layout, "모델")
-        self.quick_preset_value = self._metric_row(quick_layout, "프리셋")
-        self.quick_device_value = self._metric_row(quick_layout, "장치")
-        self.quick_audio_value = self._metric_row(quick_layout, "음성 보정")
-        self.quick_output_value = self._metric_row(quick_layout, "출력 형식")
-        quick_btn_row = QHBoxLayout()
-        self.execution_settings_btn = self._make_button("설정 열기", lambda: self._switch_page(0))
-        self.execution_check_btn = self._make_button("시스템 점검", self.start_system_check)
-        quick_btn_row.addWidget(self.execution_settings_btn)
-        quick_btn_row.addWidget(self.execution_check_btn)
-        quick_btn_row.addStretch(1)
-        quick_layout.addLayout(quick_btn_row)
-        top_grid.addWidget(quick_card, 0, 1)
+        check_row = QHBoxLayout()
+        check_row.setSpacing(8)
+        self.system_check_btn = self._make_button("시스템 점검", self.start_system_check, primary=True)
+        self.system_check_btn.setFixedHeight(38)
+        check_row.addWidget(self.system_check_btn)
+        self.system_check_hint = QLabel("모델, 엔진, GPU/CPU, 런타임 조합을 확인합니다.")
+        self.system_check_hint.setObjectName("MutedText")
+        self.system_check_hint.setWordWrap(True)
+        check_row.addWidget(self.system_check_hint, 1)
+        layout.addLayout(check_row)
 
-        mid_grid = QGridLayout()
-        mid_grid.setHorizontalSpacing(12)
-        mid_grid.setVerticalSpacing(12)
-        layout.addLayout(mid_grid)
+        self.system_check_steps = QLabel("대기")
+        self.system_check_steps.setObjectName("MutedText")
+        self.system_check_steps.setWordWrap(True)
+        self.system_check_steps.setVisible(False)
+        layout.addWidget(self.system_check_steps)
 
-        model_card = FrostedPanel(radius=26)
-        model_layout = QVBoxLayout(model_card)
-        model_layout.setContentsMargins(22, 20, 22, 20)
-        model_layout.setSpacing(10)
-        self._section_header(model_layout, "선택 모델 상태", "캐시 존재 여부와 현재 준비 상태를 즉시 확인합니다.")
-        badge_row = QHBoxLayout()
-        self.model_state_badge = QLabel("확인 중")
-        badge_row.addWidget(self.model_state_badge)
-        badge_row.addStretch(1)
-        model_layout.addLayout(badge_row)
-        self.model_status_summary_label = QLabel("선택 모델의 상태를 확인하는 중입니다.")
-        self.model_status_summary_label.setObjectName("BodyText")
-        self.model_status_summary_label.setWordWrap(True)
-        self.model_cache_path_label = QLabel("캐시 경로를 확인하는 중입니다.")
-        self.model_cache_path_label.setObjectName("MutedText")
-        self.model_cache_path_label.setWordWrap(True)
-        model_layout.addWidget(self.model_status_summary_label)
-        model_layout.addWidget(self.model_cache_path_label)
-        model_btn_row = QHBoxLayout()
-        self.download_model_btn = self._make_button("모델 다운로드", self.start_model_download)
-        self.refresh_model_btn = self._make_button("상태 새로고침", self._refresh_model_state_local)
-        model_btn_row.addWidget(self.download_model_btn)
-        model_btn_row.addWidget(self.refresh_model_btn)
-        model_btn_row.addStretch(1)
-        model_layout.addLayout(model_btn_row)
-        mid_grid.addWidget(model_card, 0, 0)
-
-        progress_card = FrostedPanel(radius=26)
-        progress_layout = QVBoxLayout(progress_card)
-        progress_layout.setContentsMargins(22, 20, 22, 20)
-        progress_layout.setSpacing(10)
-        self._section_header(progress_layout, "진행 상태", "현재 단계, 진행률, 경과 시간, 전처리 상태를 확인합니다.")
-        self.activity_status_label = QLabel("준비됨")
-        self.activity_status_label.setObjectName("StatusHeadline")
-        self.activity_status_meta_label = QLabel("대기 중")
-        self.activity_status_meta_label.setObjectName("BodyText")
-        self.activity_status_meta_label.setWordWrap(True)
-        self.activity_job_meta_label = QLabel("")
-        self.activity_job_meta_label.setObjectName("MutedText")
-        self.activity_job_meta_label.setWordWrap(True)
-        self.activity_preprocess_label = QLabel("")
-        self.activity_preprocess_label.setObjectName("MutedText")
-        self.activity_preprocess_label.setWordWrap(True)
-        self.activity_progress = QProgressBar()
-        self.activity_progress.setRange(0, 100)
-        self.activity_progress.setValue(0)
-        progress_layout.addWidget(self.activity_status_label)
-        progress_layout.addWidget(self.activity_status_meta_label)
-        progress_layout.addWidget(self.activity_job_meta_label)
-        progress_layout.addWidget(self.activity_preprocess_label)
-        progress_layout.addWidget(self.activity_progress)
-        mid_grid.addWidget(progress_card, 0, 1)
-
-        lower_grid = QGridLayout()
-        lower_grid.setHorizontalSpacing(12)
-        lower_grid.setVerticalSpacing(12)
-        layout.addLayout(lower_grid)
-
-        resource_card = FrostedPanel(radius=26)
-        resource_layout = QVBoxLayout(resource_card)
-        resource_layout.setContentsMargins(22, 20, 22, 20)
-        resource_layout.setSpacing(10)
-        self._section_header(resource_layout, "작업 중 자원 상태", "앱/시스템 부하와 VRAM 사용량을 함께 보여줍니다.")
-        badge_row = QHBoxLayout()
-        self.resource_badge_label = QLabel("점검 중")
-        badge_row.addWidget(self.resource_badge_label)
-        badge_row.addStretch(1)
-        badge_row.addWidget(self._make_button("새로고침", self.refresh_live_resource_now))
-        resource_layout.addLayout(badge_row)
-        self.resource_summary_label = QLabel("실시간 자원 상태를 불러오는 중입니다.")
-        self.resource_summary_label.setObjectName("BodyText")
-        self.resource_summary_label.setWordWrap(True)
-        self.resource_meta_label = QLabel("마지막 갱신 --:--:--")
-        self.resource_meta_label.setObjectName("MutedText")
-        self.resource_meta_label.setWordWrap(True)
-        resource_layout.addWidget(self.resource_summary_label)
-        resource_layout.addWidget(self.resource_meta_label)
-        lower_grid.addWidget(resource_card, 0, 0)
-
-        status_card = FrostedPanel(radius=26)
-        status_layout = QVBoxLayout(status_card)
-        status_layout.setContentsMargins(22, 20, 22, 20)
-        status_layout.setSpacing(12)
-        self._section_header(status_layout, "상태 요약", "모델, 엔진, 장치, 런타임 상태를 확인합니다.")
-        status_grid = QGridLayout()
-        status_grid.setHorizontalSpacing(12)
-        status_grid.setVerticalSpacing(12)
         self.status_tiles = {}
-        rows = [("model", "모델"), ("engine", "엔진"), ("torch", "PyTorch"), ("device", "장치"), ("runtime", "런타임")]
-        for idx, (key, label_text) in enumerate(rows):
-            tile = PlainPanel(radius=18)
-            tile_layout = QVBoxLayout(tile)
-            tile_layout.setContentsMargins(16, 14, 16, 14)
-            tile_layout.setSpacing(6)
+        for key, label_text in [("model", "모델"), ("engine", "엔진"), ("torch", "PyTorch"), ("device", "장치"), ("runtime", "런타임")]:
             title = QLabel(label_text)
             title.setObjectName("FormLabel")
-            badge = QLabel("확인 중")
+            title.setFixedWidth(56)
+            badge = QLabel("대기")
+            badge.setFixedWidth(52)
             summary = QLabel("상태를 확인하는 중입니다.")
-            summary.setObjectName("BodyText")
+            summary.setObjectName("MutedText")
             summary.setWordWrap(True)
-            meta = QLabel("")
-            meta.setObjectName("MutedText")
-            meta.setWordWrap(True)
-            tile_layout.addWidget(title)
-            tile_layout.addWidget(badge)
-            tile_layout.addWidget(summary)
-            tile_layout.addWidget(meta)
-            status_grid.addWidget(tile, idx // 2, idx % 2)
-            self.status_tiles[key] = {"badge": badge, "summary": summary, "meta": meta}
-        status_layout.addLayout(status_grid)
-        lower_grid.addWidget(status_card, 0, 1)
+            title.setVisible(False)
+            badge.setVisible(False)
+            summary.setVisible(False)
+            self.status_tiles[key] = {"badge": badge, "summary": summary, "meta": QLabel(""), "level": "neutral"}
+        return card
 
-        log_card = FrostedPanel(radius=26)
-        log_layout = QVBoxLayout(log_card)
-        log_layout.setContentsMargins(22, 20, 22, 20)
-        log_layout.setSpacing(12)
-        self._section_header(log_layout, "작업 로그", "현재 단계, 진행률, 작업 로그, 다운로드 속도와 남은 시간, 장치 및 자원 상태를 함께 확인할 수 있습니다.")
+    def _build_log_card(self) -> QWidget:
+        card, layout = self._card("작업 로그", "")
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMinimumHeight(320)
+        self.log_text.setMinimumHeight(180)
         self.log_text.setFont(QFont(self.code_font_family, 10))
-        log_layout.addWidget(self.log_text)
-        layout.addWidget(log_card)
+        layout.addWidget(self.log_text)
+        return card
 
-        return page
+    def _card(self, title: str, subtitle: str) -> tuple[Card, QVBoxLayout]:
+        card = Card()
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(9)
+        title_label = QLabel(title)
+        title_label.setObjectName("SectionTitle")
+        layout.addWidget(title_label)
+        if subtitle:
+            subtitle_label = QLabel(subtitle)
+            subtitle_label.setObjectName("MutedText")
+            subtitle_label.setWordWrap(True)
+            layout.addWidget(subtitle_label)
+        return card, layout
 
-    def _build_footer(self, parent: QWidget):
-        layout = QVBoxLayout(parent)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(10)
+    def _configure_combo(self, combo: QComboBox, min_chars: int):
+        combo.setMaxVisibleItems(5)
+        combo.setMinimumContentsLength(min_chars)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        combo.setFixedHeight(40)
+        view = QListView(combo)
+        view.setUniformItemSizes(True)
+        view.setSpacing(0)
+        view.setFrameShape(QFrame.Shape.NoFrame)
+        view.setMinimumWidth(220)
+        view.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+        view.viewport().setAutoFillBackground(True)
+        view.setStyleSheet(
+            """
+            QListView {
+                color: #f7fafc;
+                background: #1f2830;
+                border: none;
+                border-radius: 0px;
+                padding: 2px;
+                outline: 0;
+                selection-background-color: #2f6f91;
+                selection-color: #ffffff;
+            }
+            QListView::item {
+                min-height: 24px;
+                padding: 3px 10px;
+                background: #1f2830;
+            }
+            QListView::item:hover, QListView::item:selected {
+                background: #2f6f91;
+                color: #ffffff;
+            }
+            """
+        )
+        combo.setView(view)
 
-        top = QHBoxLayout()
-        top.setSpacing(10)
-        layout.addLayout(top)
-
-        self.start_btn = self._make_button("전사 시작", self.start_transcription, primary=True)
-        self.cancel_btn = self._make_button("취소", self._cancel_current_task, danger=True)
-        self.cancel_btn.setEnabled(False)
-        self.open_result_btn = self._make_button("결과 열기", self.open_result)
-        self.open_folder_btn = self._make_button("폴더 열기", self.open_result_folder)
-        self.open_result_btn.setEnabled(False)
-        self.open_folder_btn.setEnabled(False)
-        for btn in [self.start_btn, self.cancel_btn, self.open_result_btn, self.open_folder_btn]:
-            top.addWidget(btn)
-
-        top.addSpacing(8)
-        self.footer_status_label = QLabel("준비됨")
-        self.footer_status_label.setObjectName("BodyText")
-        top.addWidget(self.footer_status_label, 1)
-        top.addSpacing(8)
-        self.size_grip = QSizeGrip(parent)
-        top.addWidget(self.size_grip, 0, Qt.AlignmentFlag.AlignBottom)
-
-        meta_row = QHBoxLayout()
-        meta_row.setSpacing(10)
-        self.footer_transfer_label = QLabel("")
-        self.footer_transfer_label.setObjectName("BodyText")
-        self.footer_transfer_label.setWordWrap(True)
-        self.footer_meta_label = QLabel("")
-        self.footer_meta_label.setObjectName("MutedText")
-        self.footer_meta_label.setWordWrap(True)
-        meta_row.addWidget(self.footer_transfer_label, 1)
-        meta_row.addWidget(self.footer_meta_label, 1)
-        layout.addLayout(meta_row)
-
-        self.footer_progress = QProgressBar()
-        self.footer_progress.setRange(0, 100)
-        self.footer_progress.setValue(0)
-        layout.addWidget(self.footer_progress)
-
-    # -------------------------------------------------
-    # Small builders
-    # -------------------------------------------------
     def _make_button(self, text: str, slot, primary: bool = False, danger: bool = False) -> QPushButton:
         btn = QPushButton(text)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1322,64 +1314,32 @@ class SubtitleGUI(QMainWindow):
             btn.setObjectName("PrimaryButton")
         elif danger:
             btn.setObjectName("DangerButton")
-        else:
-            btn.setObjectName("SoftButton")
         return btn
 
-    def _section_header(self, layout: QVBoxLayout, title: str, subtitle: str):
-        title_label = QLabel(title)
-        title_label.setObjectName("SectionTitle")
-        subtitle_label = QLabel(subtitle)
-        subtitle_label.setObjectName("SectionSub")
-        subtitle_label.setWordWrap(True)
-        layout.addWidget(title_label)
-        layout.addWidget(subtitle_label)
-
-    def _metric_row(self, layout: QVBoxLayout, label: str) -> QLabel:
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        left = QLabel(label)
-        left.setObjectName("FormLabel")
-        value = QLabel("-")
-        value.setObjectName("HeroValue")
-        value.setWordWrap(True)
-        row.addWidget(left)
-        row.addWidget(value, 1)
-        layout.addLayout(row)
-        return value
+    def _make_chip(self, text: str, slot) -> QPushButton:
+        btn = self._make_button(text, slot)
+        btn.setObjectName("ChipButton")
+        btn.setCheckable(True)
+        return btn
 
     def _form_row(self, layout: QVBoxLayout, label: str, widget: QWidget):
-        label_widget = QLabel(label)
-        label_widget.setObjectName("FormLabel")
+        label_widget = self._small_label(label)
         layout.addWidget(label_widget)
         layout.addWidget(widget)
 
     def _set_badge(self, label: QLabel, level: str, text: str):
-        level = (level or "neutral").lower()
         palette = {
-            "success": ("rgba(114,226,163,0.22)", "rgba(204,255,223,0.94)", "rgba(114,226,163,0.32)"),
-            "warning": ("rgba(255,198,116,0.22)", "rgba(255,239,205,0.96)", "rgba(255,198,116,0.30)"),
-            "danger": ("rgba(255,117,117,0.22)", "rgba(255,220,220,0.96)", "rgba(255,117,117,0.30)"),
-            "info": ("rgba(129,191,255,0.22)", "rgba(225,239,255,0.96)", "rgba(129,191,255,0.30)"),
-            "neutral": ("rgba(255,255,255,0.12)", "rgba(248,244,250,0.92)", "rgba(255,255,255,0.16)"),
+            "success": ("#213a32", "#c9f0dc", "#3e765d"),
+            "warning": ("#3e3828", "#ffe6ad", "#8e7635"),
+            "danger": ("#4a2829", "#ffdeda", "#9e3a36"),
+            "info": ("#26384a", "#cfe5f8", "#496f91"),
+            "neutral": ("#303b45", "#d5dee7", "#546574"),
         }
-        bg, fg, border = palette.get(level, palette["neutral"])
+        bg, fg, border = palette.get((level or "neutral").lower(), palette["neutral"])
         label.setText(text)
         label.setStyleSheet(
-            f"background:{bg}; color:{fg}; border:1px solid {border}; border-radius:11px; padding:6px 10px; font-weight:700;"
+            f"background:{bg}; color:{fg}; border:1px solid {border}; border-radius:5px; padding:4px 8px; font-weight:800;"
         )
-
-    # -------------------------------------------------
-    # Navigation
-    # -------------------------------------------------
-    def _switch_page(self, index: int):
-        self.stack.setCurrentIndex(index)
-        for idx, btn in enumerate(self.nav_buttons):
-            btn.setChecked(idx == index)
-
-    def toggle_sidebar(self):
-        # 사이드바 기반 레이아웃은 제거하고 상단 탭 구조로 전환했습니다.
-        return
 
     def _combo_data(self, combo: QComboBox, fallback: str) -> str:
         value = combo.currentData()
@@ -1416,6 +1376,12 @@ class SubtitleGUI(QMainWindow):
             result.append("vtt")
         return result or list(DEFAULT_OUTPUT_FORMATS)
 
+    def current_output_dir(self) -> str | None:
+        if self.use_source_folder_check.isChecked():
+            return None
+        path = self.output_dir_edit.text().strip()
+        return path or None
+
     def _set_combo_by_data(self, combo: QComboBox, value: str):
         for idx in range(combo.count()):
             if combo.itemData(idx) == value:
@@ -1427,6 +1393,7 @@ class SubtitleGUI(QMainWindow):
         for key, btn in self.device_buttons.items():
             btn.setChecked(key == value)
         self._refresh_selection_hints()
+        self._schedule_system_check()
 
     def _set_audio_enhance_level(self, value: str):
         value = value if value in self.audio_buttons else DEFAULT_AUDIO_ENHANCE_LEVEL
@@ -1434,11 +1401,67 @@ class SubtitleGUI(QMainWindow):
             btn.setChecked(key == value)
         self._refresh_selection_hints()
 
+    def toggle_model_details(self):
+        visible = not self.model_cache_path_label.isVisible()
+        self.model_cache_path_label.setVisible(visible)
+        self.model_detail_btn.setText("숨김" if visible else "위치")
+
+    def _on_output_folder_mode_changed(self):
+        use_source = self.use_source_folder_check.isChecked()
+        self.output_dir_edit.setEnabled(not use_source)
+        self.output_dir_btn.setEnabled(not use_source)
+        self.output_dir_edit.setVisible(not use_source)
+        self.output_dir_btn.setVisible(not use_source)
+        self._refresh_selection_hints()
+
+    def _on_output_dir_text_changed(self):
+        self._refresh_selection_hints()
+
+    def browse_output_dir(self):
+        folder = QFileDialog.getExistingDirectory(self, "출력 폴더 선택", self.output_dir_edit.text().strip() or "")
+        if folder:
+            self.output_dir_edit.setText(folder)
+
     def _on_model_changed(self):
         self._refresh_selection_hints()
         self._refresh_model_state_local()
+        self._schedule_system_check()
+
+    def _on_preset_changed(self):
+        if self._loading_settings:
+            return
+        self.settings["custom_preset_enabled"] = False
+        self.settings.pop("custom_preset_overrides", None)
+        self._apply_preset_controls(get_transcription_preset(self.current_preset_id()))
+        self._refresh_selection_hints()
+
+    def _apply_preset_controls(self, preset: dict):
+        was_loading = self._loading_settings
+        self._loading_settings = True
+        self.custom_beam_spin.setValue(int(preset.get("beam_size", 5)))
+        self.custom_vad_speech_spin.setValue(int(preset.get("vad_min_speech_ms", 250)))
+        self.custom_vad_silence_spin.setValue(int(preset.get("vad_min_silence_ms", 1000)))
+        self.custom_repetition_spin.setValue(float(preset.get("repetition_penalty", 1.03)))
+        self._loading_settings = was_loading
+
+    def _on_custom_preset_changed(self):
+        if self._loading_settings:
+            return
+        self.settings["custom_preset_enabled"] = True
+        self.settings["custom_preset_overrides"] = self.current_preset_overrides()
+        self.save_ui_settings()
+        self._refresh_selection_hints()
+
+    def current_preset_overrides(self) -> dict:
+        return {
+            "beam_size": int(self.custom_beam_spin.value()),
+            "vad_min_speech_ms": int(self.custom_vad_speech_spin.value()),
+            "vad_min_silence_ms": int(self.custom_vad_silence_spin.value()),
+            "repetition_penalty": float(self.custom_repetition_spin.value()),
+        }
 
     def _load_settings_into_ui(self):
+        self._loading_settings = True
         self._set_combo_by_data(self.language_combo, self.settings.get("language", DEFAULT_LANGUAGE))
         self._set_combo_by_data(self.model_combo, self.settings.get("model_id", default_model_id()))
         self._set_combo_by_data(self.preset_combo, self.settings.get("preset_id", DEFAULT_PRESET_ID))
@@ -1448,6 +1471,25 @@ class SubtitleGUI(QMainWindow):
         self.output_fmt_srt.setChecked("srt" in formats or not formats)
         self.output_fmt_txt.setChecked("txt" in formats)
         self.output_fmt_vtt.setChecked("vtt" in formats)
+        self.use_source_folder_check.setChecked(bool(self.settings.get("use_source_folder", True)))
+        self.output_dir_edit.setText(str(self.settings.get("output_dir", "")))
+        self._on_output_folder_mode_changed()
+        custom = self.settings.get("custom_preset_overrides")
+        if self.settings.get("custom_preset_enabled") and isinstance(custom, dict) and custom:
+            preset = dict(get_transcription_preset(self.current_preset_id()))
+            preset.update(custom)
+            self._apply_preset_controls(preset)
+        else:
+            self._apply_preset_controls(get_transcription_preset(self.current_preset_id()))
+        self._loading_settings = False
+
+    def _schedule_system_check(self):
+        if self._loading_settings:
+            return
+        if self.worker_thread and self.worker_thread.is_alive():
+            return
+        if hasattr(self, "auto_check_timer"):
+            self.auto_check_timer.start(650)
 
     def save_ui_settings(self):
         self.settings["language"] = self.current_lang_code()
@@ -1456,47 +1498,61 @@ class SubtitleGUI(QMainWindow):
         self.settings["preferred_device"] = self.current_preferred_device()
         self.settings["audio_enhance_level"] = self.current_audio_enhance_level()
         self.settings["output_formats"] = self.current_output_formats()
+        self.settings["use_source_folder"] = self.use_source_folder_check.isChecked()
+        self.settings["output_dir"] = self.output_dir_edit.text().strip()
+        if hasattr(self, "custom_beam_spin") and self.settings.get("custom_preset_enabled"):
+            self.settings["custom_preset_overrides"] = self.current_preset_overrides()
+        elif hasattr(self, "custom_beam_spin"):
+            self.settings.pop("custom_preset_overrides", None)
         save_settings(self.settings)
 
     def _refresh_selection_hints(self):
         lang_code = self.current_lang_code()
-        lang_name = get_language_korean_name(lang_code)
+        lang_name = dict(LANGUAGE_LABELS).get(lang_code, get_language_korean_name(lang_code))
         model_entry = next((m for m in MODEL_CATALOG if m["id"] == self.current_model_id()), None)
-        preset = get_transcription_preset(self.current_preset_id())
-        device_text = {"auto": "자동", "cuda": "GPU", "cpu": "CPU"}.get(self.current_preferred_device(), "자동")
-        audio_text = {"off": "끔", "standard": "표준", "strong": "강함"}.get(self.current_audio_enhance_level(), "끔")
+        preset_id = self.current_preset_id()
+        preset_name = PRESET_LABELS.get(preset_id, preset_id)
+        device_text = DEVICE_LABELS.get(self.current_preferred_device(), "자동")
+        audio_text = AUDIO_LABELS.get(self.current_audio_enhance_level(), "끔")
         outputs = ", ".join(fmt.upper() for fmt in self.current_output_formats())
+        save_text = "원본 폴더" if self.use_source_folder_check.isChecked() else (compact_path_for_display(self.output_dir_edit.text().strip(), 2) or "폴더 선택 필요")
+        preset = get_transcription_preset(preset_id)
 
         self.quick_lang_value.setText(f"{lang_name} · {lang_code}")
         self.quick_model_value.setText(model_entry["label"] if model_entry else self.current_model_id())
-        self.quick_preset_value.setText(preset["label"])
+        self.quick_preset_value.setText(preset_name)
         self.quick_device_value.setText(device_text)
         self.quick_audio_value.setText(audio_text)
         self.quick_output_value.setText(outputs)
+        if hasattr(self, "preset_detail_label"):
+            temps = ", ".join(str(v) for v in preset.get("temperature", []))
+            self.preset_detail_label.setText(
+                f"{preset.get('short_note', '')}\n"
+                f"beam {self.custom_beam_spin.value()} · VAD {self.custom_vad_speech_spin.value()}/{self.custom_vad_silence_spin.value()}ms · "
+                f"temp {temps} · 반복 억제 {self.custom_repetition_spin.value():.2f}"
+            )
+        if hasattr(self, "quick_save_value"):
+            self.quick_save_value.setText(save_text)
 
-        self.launch_status_label.setText("준비됨" if not self.current_task_kind else self.current_task_label)
-        self.launch_meta_label.setText(
-            f"모델 {self.quick_model_value.text()} · 프리셋 {self.quick_preset_value.text()} · 출력 {outputs}"
+        if not self.current_task_kind:
+            self.footer_status_label.setText("시작 대기")
+        self.footer_transfer_label.setText(
+            self._compact_status_text(f"{self.quick_model_value.text()} · {preset_name} · {outputs}", 76)
         )
 
         device_note_map = {
             "auto": "GPU와 CPU 중 안정적으로 동작하는 조합을 자동 선택합니다.",
-            "cuda": "GPU 가속을 우선 시도합니다. 실패하면 CPU fallback이 필요할 수 있습니다.",
+            "cuda": "GPU 가속을 우선 시도합니다.",
             "cpu": "호환성과 재현성을 우선합니다. 처리 시간은 더 길어질 수 있습니다.",
         }
         self.device_note_label.setText(device_note_map.get(self.current_preferred_device(), "장치 선호를 확인하십시오."))
 
-        rec = self._recommendations_for_current_inputs()
-        self.recommendation_summary_label.setText(rec.get("summary", ""))
-        self.recommendation_meta_label.setText(rec.get("meta", ""))
-
-        self.home_start_btn.setEnabled(bool(self.input_files) and not (self.worker_thread and self.worker_thread.is_alive()))
+        is_busy = bool(self.worker_thread and self.worker_thread.is_alive())
+        if hasattr(self, "home_start_btn"):
+            self.home_start_btn.setEnabled(bool(self.input_files) and not is_busy)
         self.save_ui_settings()
         self._refresh_file_summary()
 
-    # -------------------------------------------------
-    # Files / recommendations
-    # -------------------------------------------------
     def browse_input_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self,
@@ -1555,19 +1611,27 @@ class SubtitleGUI(QMainWindow):
         has_files = bool(self.input_files)
         self.remove_file_btn.setEnabled(has_files)
         self.clear_file_btn.setEnabled(has_files)
-        if hasattr(self, "home_start_btn"):
-            self.home_start_btn.setEnabled(has_files and not bool(self.current_task_kind))
+        self.home_start_btn.setEnabled(has_files and not bool(self.current_task_kind))
 
     def _refresh_file_summary(self):
         valid = [path for path in self.input_files if os.path.isfile(path)]
         if not valid:
             self.file_summary_label.setText("선택된 파일이 없습니다.")
+            if hasattr(self, "quick_save_value"):
+                if self.use_source_folder_check.isChecked():
+                    self.quick_save_value.setText("원본 폴더")
+                else:
+                    self.quick_save_value.setText(compact_path_for_display(self.output_dir_edit.text().strip(), 2) or "폴더 선택 필요")
             return
         if len(valid) == 1:
-            text = f"1개 파일 · {os.path.basename(valid[0])}\n{valid[0]}"
+            self.file_summary_label.setText(f"1개 파일 · {os.path.basename(valid[0])}\n{compact_path_for_display(valid[0], 4)}")
         else:
-            text = f"총 {len(valid)}개 파일 선택됨 · 마지막 파일 {os.path.basename(valid[-1])}"
-        self.file_summary_label.setText(text)
+            self.file_summary_label.setText(f"총 {len(valid)}개 파일 선택됨 · 마지막 파일 {os.path.basename(valid[-1])}")
+        if hasattr(self, "quick_save_value"):
+            if self.use_source_folder_check.isChecked():
+                self.quick_save_value.setText("원본 폴더")
+            else:
+                self.quick_save_value.setText(compact_path_for_display(self.output_dir_edit.text().strip(), 2) or "폴더 선택 필요")
 
     def _recommendations_for_current_inputs(self) -> dict:
         result = {
@@ -1607,60 +1671,55 @@ class SubtitleGUI(QMainWindow):
         if any(keyword in names for keyword in noisy_keywords):
             preset_id = "noisy-performance"
             audio_level = "strong"
-            why.append("파일명에 현장/잡음 계열 단서가 있어 잡음 대응 프리셋을 우선 권장했습니다.")
+            why.append("파일명에 현장/잡음 단서가 있어 잡음 대응 설정을 권장했습니다.")
         elif avg_duration >= 1200 or any(keyword in names for keyword in lecture_keywords):
             preset_id = "lecture-meeting"
             audio_level = "standard"
-            why.append("긴 발화 또는 강의/회의 계열로 보여 연속 발화 프리셋을 권장했습니다.")
+            why.append("긴 발화 또는 강의/회의 계열로 보여 연속 발화 설정을 권장했습니다.")
         elif exts & video_exts or any(keyword in names for keyword in dialogue_keywords):
             preset_id = "dialogue-video"
             audio_level = "standard"
-            why.append("영상 또는 대사형 콘텐츠로 보여 대사형 프리셋을 권장했습니다.")
+            why.append("영상 또는 대사형 콘텐츠로 보여 대사형 설정을 권장했습니다.")
         else:
-            why.append("특정 단서가 강하지 않아 균형 프리셋을 유지하는 편이 안전합니다.")
+            why.append("특정 단서가 강하지 않아 균형 설정을 유지합니다.")
 
         output_formats = ["srt"]
         if batch_count >= 3:
             output_formats.append("txt")
-            why.append("여러 파일을 한 번에 처리하므로 전체 검토용 TXT 동시 저장을 권장했습니다.")
+            why.append("여러 파일 처리라 TXT 동시 저장을 권장했습니다.")
         if exts & video_exts:
             output_formats.append("vtt")
-            why.append("영상 파일이 포함되어 웹/플레이어 호환용 VTT 저장을 함께 권장했습니다.")
+            why.append("영상 파일이 포함되어 VTT 저장을 함께 권장했습니다.")
 
         model_id = None
-        if self.current_preferred_device() == "cpu":
-            if total_duration >= 7200 or batch_count >= 5:
-                model_id = "small"
-                why.append("CPU 기준 작업량이 커 보여 처리 시간을 줄이기 위해 Small 모델을 권장했습니다.")
-        elif preset_id == "quality-priority" and batch_count <= 2:
-            model_id = "large-v3"
+        if self.current_preferred_device() == "cpu" and (total_duration >= 7200 or batch_count >= 5):
+            model_id = "small"
+            why.append("CPU 기준 작업량이 커 보여 Small 모델을 권장했습니다.")
 
-        result.update({
-            "summary": f"권장 프리셋 {get_transcription_preset(preset_id)['label']} · 음성 보정 {{'off':'끔','standard':'표준','strong':'강함'}}[audio_level] · 출력 {', '.join(fmt.upper() for fmt in output_formats)}",
-            "meta": " ".join(why),
-            "preset_id": preset_id,
-            "audio_enhance_level": audio_level,
-            "output_formats": output_formats,
-            "model_id": model_id,
-        })
+        result.update(
+            {
+                "summary": f"권장 프리셋 {PRESET_LABELS.get(preset_id, preset_id)} · 음성 보정 {AUDIO_LABELS.get(audio_level, audio_level)} · 출력 {', '.join(fmt.upper() for fmt in output_formats)}",
+                "meta": " ".join(why),
+                "preset_id": preset_id,
+                "audio_enhance_level": audio_level,
+                "output_formats": output_formats,
+                "model_id": model_id,
+            }
+        )
         return result
 
     def apply_recommendations(self):
         rec = self._recommendations_for_current_inputs()
-        preset_id = rec.get("preset_id")
-        audio_level = rec.get("audio_enhance_level")
+        if rec.get("preset_id"):
+            self._set_combo_by_data(self.preset_combo, rec["preset_id"])
+        if rec.get("audio_enhance_level"):
+            self._set_audio_enhance_level(rec["audio_enhance_level"])
         output_formats = rec.get("output_formats") or list(DEFAULT_OUTPUT_FORMATS)
-        model_id = rec.get("model_id")
-
-        if preset_id:
-            self._set_combo_by_data(self.preset_combo, preset_id)
-        if audio_level:
-            self._set_audio_enhance_level(audio_level)
         self.output_fmt_srt.setChecked("srt" in output_formats)
         self.output_fmt_txt.setChecked("txt" in output_formats)
         self.output_fmt_vtt.setChecked("vtt" in output_formats)
-        if model_id:
-            self._set_combo_by_data(self.model_combo, model_id)
+        if rec.get("model_id"):
+            self._set_combo_by_data(self.model_combo, rec["model_id"])
         self._refresh_selection_hints()
         self._append_log("자동 권장 설정을 적용했습니다.")
 
@@ -1672,7 +1731,7 @@ class SubtitleGUI(QMainWindow):
             return summary
         mode = preprocess_info.get("mode", "")
         if mode == "enhanced":
-            label = {"standard": "표준", "strong": "강함"}.get(preprocess_info.get("applied_level"), "적용")
+            label = AUDIO_LABELS.get(preprocess_info.get("applied_level"), "적용")
             return f"전처리 완료 · 음성 보정 {label} 적용"
         if mode == "fallback-basic":
             return "전처리 fallback · 기본 전처리 사용"
@@ -1684,13 +1743,12 @@ class SubtitleGUI(QMainWindow):
         summary = self._format_preprocess_summary(preprocess_info)
         if not summary:
             self.activity_preprocess_label.setText("")
+            self.activity_preprocess_label.setVisible(False)
             return
         prefix = f"전처리 · {os.path.basename(input_path)} · " if input_path and len(self.input_files) > 1 else "전처리 · "
         self.activity_preprocess_label.setText(prefix + summary)
+        self.activity_preprocess_label.setVisible(True)
 
-    # -------------------------------------------------
-    # Status / logs / progress
-    # -------------------------------------------------
     def _append_log(self, message: str):
         timestamp = time.strftime("%H:%M:%S")
         self.log_text.appendPlainText(f"[{timestamp}] {message}")
@@ -1699,21 +1757,23 @@ class SubtitleGUI(QMainWindow):
         self.log_text.setTextCursor(cursor)
 
     def _set_status(self, text: str):
-        self.footer_status_label.setText(text)
-        if hasattr(self, "activity_status_label"):
-            self.activity_status_label.setText(text)
-        if hasattr(self, "launch_status_label"):
-            self.launch_status_label.setText(text)
+        self.footer_status_label.setText(self._compact_status_text(text, 52))
+        compact = self._compact_status_text(text, 40)
+        self.activity_status_label.setText(compact)
 
     def _set_transfer_texts(self, headline: str, meta: str = ""):
-        self.footer_transfer_label.setText(headline)
-        if hasattr(self, "activity_status_meta_label"):
-            self.activity_status_meta_label.setText(headline)
-        self.footer_meta_label.setText(meta)
-        if hasattr(self, "launch_meta_label") and headline:
-            self.launch_meta_label.setText(headline if not meta else f"{headline}\n{meta}")
-        if meta and hasattr(self, "activity_job_meta_label"):
+        self.footer_transfer_label.setText(self._compact_status_text(headline, 76))
+        self.activity_status_meta_label.setText(headline)
+        self.footer_meta_label.setText(self._compact_status_text(meta, 76))
+        if meta:
             self.activity_job_meta_label.setText(meta)
+
+    def _compact_status_text(self, text: str, limit: int) -> str:
+        text = str(text or "").replace("\r", " ").strip()
+        text = " ".join(part.strip() for part in text.splitlines() if part.strip())
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 1)].rstrip() + "..."
 
     def _set_progress_value(self, percent: float):
         value = int(max(0.0, min(100.0, percent)))
@@ -1737,11 +1797,11 @@ class SubtitleGUI(QMainWindow):
         self.cancel_event = threading.Event()
         self.job_started_at = time.time()
         self.start_btn.setEnabled(False)
-        if hasattr(self, "home_start_btn"):
-            self.home_start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(cancellable)
         if hasattr(self, "download_model_btn"):
             self.download_model_btn.setEnabled(False)
+        if hasattr(self, "settings_download_model_btn"):
+            self.settings_download_model_btn.setEnabled(False)
         self.job_clock_timer.start()
         self._set_status(label)
         self._refresh_job_clock()
@@ -1751,18 +1811,17 @@ class SubtitleGUI(QMainWindow):
         self.current_task_label = ""
         self.cancel_event = None
         self.worker_thread = None
-        self.start_btn.setEnabled(True)
-        if hasattr(self, "home_start_btn"):
-            self.home_start_btn.setEnabled(bool(self.input_files))
+        self.start_btn.setEnabled(bool(self.input_files))
         self.cancel_btn.setEnabled(False)
         if hasattr(self, "download_model_btn"):
             self.download_model_btn.setEnabled(True)
+        if hasattr(self, "settings_download_model_btn"):
+            self.settings_download_model_btn.setEnabled(True)
         self.job_clock_timer.stop()
         if clear_transfer:
             self.footer_transfer_label.setText("")
             self.footer_meta_label.setText("")
-            if hasattr(self, "activity_job_meta_label"):
-                self.activity_job_meta_label.setText("")
+            self.activity_job_meta_label.setText("")
         self._progress_busy_off()
 
     def _refresh_job_clock(self):
@@ -1778,7 +1837,7 @@ class SubtitleGUI(QMainWindow):
         else:
             meta = f"경과 {elapsed_text}"
         self.activity_job_meta_label.setText(meta)
-        self.footer_meta_label.setText(meta)
+        self.footer_meta_label.setText(self._compact_status_text(meta, 76))
 
     def _notify_task_busy(self, task_name: str):
         QMessageBox.information(self, "작업 진행 중", f"이미 다른 작업이 진행 중입니다.\n현재 요청: {task_name}")
@@ -1789,52 +1848,100 @@ class SubtitleGUI(QMainWindow):
             self._append_log("취소 요청을 전달했습니다.")
             self._set_status("취소 요청을 처리하는 중입니다...")
 
-    # -------------------------------------------------
-    # Resource / model state / startup
-    # -------------------------------------------------
-    def _update_status_tile(self, key: str, level: str, summary: str, meta: str):
+    def _update_status_tile(self, key: str, level: str, summary: str, meta: str = ""):
         tile = self.status_tiles.get(key)
         if not tile:
             return
-        self._set_badge(tile["badge"], level, level.upper())
+        level = (level or "neutral").lower()
+        text_map = {"success": "정상", "warning": "주의", "danger": "오류", "info": "확인", "neutral": "대기"}
+        self._set_badge(tile["badge"], level, text_map.get(level, "대기"))
         tile["summary"].setText(summary)
         tile["meta"].setText(meta)
+        tile["level"] = level
+        self._refresh_system_overview()
+
+    def _refresh_system_overview(self):
+        if not hasattr(self, "status_tiles") or not self.status_tiles:
+            return
+        levels = [tile.get("level", "neutral") for tile in self.status_tiles.values()]
+        if any(level == "danger" for level in levels):
+            title = "전사 환경 오류"
+            meta = "오류 항목을 확인한 뒤 다시 점검하십시오."
+            badge_level = "danger"
+        elif any(level == "warning" for level in levels):
+            title = "전사 환경 확인 필요"
+            meta = "일부 항목이 준비되지 않았습니다. 모델 다운로드나 장치 설정을 확인하십시오."
+            badge_level = "warning"
+        elif levels and all(level == "success" for level in levels):
+            title = "전사 환경 준비 완료"
+            meta = f"모델 {self.current_model_id()} · 장치 {self.current_preferred_device().upper()}"
+            badge_level = "success"
+        else:
+            title = "점검 중"
+            meta = "모델, 엔진, 장치, 런타임 상태를 확인하는 중입니다."
+            badge_level = "neutral"
+        if hasattr(self, "system_overview_title"):
+            self.system_overview_title.setText(title)
+            self.system_overview_meta.setText(meta)
+            if hasattr(self, "system_check_steps"):
+                self.system_check_steps.setText(meta)
+                self.system_check_steps.setVisible(self.current_task_kind == "system_check")
+        if hasattr(self, "options_health_badge"):
+            self._set_badge(self.options_health_badge, badge_level, {"success": "준비", "warning": "확인", "danger": "오류"}.get(badge_level, "점검"))
+            self.options_health_title.setText(title)
+            self.options_health_detail.setText(meta)
 
     def _refresh_model_state_local(self):
         try:
             info = inspect_model_availability(self.current_model_id(), include_remote_meta=False)
             self._apply_model_availability(info)
         except Exception as exc:
-            self.model_status_summary_label.setText(f"모델 상태 확인 실패: {exc}")
             self.model_cache_path_label.setText("")
-            self._set_badge(self.model_state_badge, "warning", "확인 실패")
+            self._set_badge(self.model_state_badge, "warning", "모델 확인 실패")
 
     def _apply_model_availability(self, info: dict):
         if info.get("is_cached"):
-            self._set_badge(self.model_state_badge, "success", "로컬 준비됨")
-            summary = f"{info.get('label', self.current_model_id())} 모델이 이미 로컬 캐시에 있습니다."
+            self._set_badge(self.model_state_badge, "success", "모델 로컬 준비됨")
+            summary = f"{info.get('label', self.current_model_id())} 모델이 로컬 캐시에 있습니다."
             tile_level = "success"
         else:
-            self._set_badge(self.model_state_badge, "warning", "다운로드 필요")
+            self._set_badge(self.model_state_badge, "warning", "모델 다운로드 필요")
             summary = f"{info.get('label', self.current_model_id())} 모델이 아직 로컬에 없습니다."
             tile_level = "warning"
-        self.model_status_summary_label.setText(summary)
         self.model_cache_path_label.setText(info.get("cached_path_display") or "아직 캐시가 없습니다.")
+        cached = bool(info.get("is_cached"))
+        if hasattr(self, "download_model_btn"):
+            self.download_model_btn.setEnabled(not cached and not bool(self.current_task_kind))
+        if hasattr(self, "settings_download_model_btn"):
+            self.settings_download_model_btn.setEnabled(not cached and not bool(self.current_task_kind))
         self._update_status_tile("model", tile_level, info.get("label", self.current_model_id()), summary)
 
     def _update_live_resource_ui(self, payload: dict):
-        level = payload.get("level", "neutral")
-        self._set_badge(self.resource_badge_label, level, payload.get("pressure_label", "정보 없음"))
-        summary = (
-            f"앱 CPU {payload.get('app_cpu_text', '정보 없음')} · 앱 RAM {payload.get('app_ram_text', '정보 없음')} · "
-            f"시스템 RAM {payload.get('ram_text', '정보 없음')} · GPU {payload.get('gpu_name', '감지되지 않음')}"
-        )
-        meta = (
-            f"시스템 CPU {payload.get('system_cpu_text', '정보 없음')} · VRAM {payload.get('vram_text', '정보 없음')} · "
-            f"마지막 갱신 {payload.get('timestamp_text', '--:--:--')}"
-        )
-        self.resource_summary_label.setText(summary)
-        self.resource_meta_label.setText(meta)
+        if hasattr(self, "cpu_meter"):
+            cpu_value = int(max(0, min(100, float(payload.get("system_cpu_percent") or payload.get("cpu_percent") or 0))))
+            ram_value = int(max(0, min(100, float(payload.get("ram_percent") or 0))))
+            vram_value = int(max(0, min(100, float(payload.get("vram_percent") or 0))))
+            self.cpu_meter.setValue(cpu_value)
+            self.cpu_meter.setFormat(f"CPU {cpu_value}%")
+            self.ram_meter.setValue(ram_value)
+            self.ram_meter.setFormat(f"RAM {ram_value}%")
+            if payload.get("gpu_available"):
+                self.vram_meter.setValue(vram_value)
+                self.vram_meter.setFormat(f"VRAM {vram_value}%")
+            else:
+                self.vram_meter.setValue(0)
+                self.vram_meter.setFormat("VRAM 없음")
+            pressure = payload.get("pressure_label", "정보 없음")
+            self.resource_state_btn.setText(pressure)
+            level = payload.get("level", "neutral")
+            palette = {
+                "success": "#2c5c45",
+                "warning": "#71602d",
+                "danger": "#8e3a36",
+                "info": "#36536e",
+                "neutral": "#34414d",
+            }
+            self.resource_state_btn.setStyleSheet(f"background:{palette.get(level, '#34414d')}; color:#f7fafc;")
 
     def refresh_live_resource_now(self):
         if self.worker_thread and self.worker_thread.is_alive() and self.current_task_kind == "model_download":
@@ -1844,7 +1951,108 @@ class SubtitleGUI(QMainWindow):
             self.live_resource_data = payload
             self._update_live_resource_ui(payload)
         except Exception as exc:
-            self.resource_summary_label.setText(f"실시간 자원 상태 갱신 실패: {exc}")
+            if hasattr(self, "resource_state_btn"):
+                self.resource_state_btn.setText("갱신 실패")
+
+    def show_system_details(self):
+        try:
+            latest = collect_live_resource_status()
+            self.live_resource_data = latest
+            self._update_live_resource_ui(latest)
+        except Exception as exc:
+            latest = {"error": str(exc)}
+
+        dialog = SystemDetailsDialog("시스템 상세 정보", self._system_detail_sections(latest), self)
+        dialog.exec()
+
+    def _system_detail_sections(self, latest: dict) -> list[dict]:
+        model_entry = next((m for m in MODEL_CATALOG if m["id"] == self.current_model_id()), None)
+        lang_name = dict(LANGUAGE_LABELS).get(self.current_lang_code(), self.current_lang_code())
+        settings_rows = [
+            ("언어", f"{lang_name} · {self.current_lang_code()}"),
+            ("모델", model_entry["label"] if model_entry else self.current_model_id()),
+            ("프리셋", PRESET_LABELS.get(self.current_preset_id(), self.current_preset_id())),
+            ("음성 보정", AUDIO_LABELS.get(self.current_audio_enhance_level(), self.current_audio_enhance_level())),
+            ("출력", ", ".join(fmt.upper() for fmt in self.current_output_formats())),
+            ("저장", "원본과 같은 폴더" if self.use_source_folder_check.isChecked() else (self.output_dir_edit.text().strip() or "미지정")),
+        ]
+
+        resource_rows = [
+            ("상태", latest.get("pressure_label") or latest.get("alert_text") or "정보 없음"),
+            ("CPU", latest.get("system_cpu_text") or latest.get("cpu_text") or "-"),
+            ("RAM", latest.get("ram_text", "-")),
+            ("VRAM", latest.get("vram_text", "GPU 없음")),
+            ("GPU", latest.get("gpu_name", "감지되지 않음")),
+            ("환경", f"{latest.get('os_text', '-')} · Python {latest.get('python_version', '-')}"),
+        ]
+
+        details = self.status_details or {}
+
+        def section_dict(key: str) -> dict:
+            value = details.get(key, {})
+            if isinstance(value, dict):
+                return value
+            result = {}
+            for line in str(value or "").splitlines():
+                if ":" in line:
+                    name, item = line.split(":", 1)
+                    result[name.strip()] = item.strip()
+                elif line.strip():
+                    result.setdefault("상태", line.strip())
+            return result
+
+        model = section_dict("model")
+        engine = section_dict("engine")
+        torch = section_dict("torch")
+        device = section_dict("device")
+        runtime = section_dict("runtime")
+
+        sections = [
+            {"title": "현재 설정", "rows": settings_rows},
+            {"title": "실시간 자원", "rows": resource_rows},
+        ]
+        if model:
+            sections.append(
+                {
+                    "title": "모델",
+                    "rows": [
+                        ("선택 모델", model.get("선택 모델", model_entry["label"] if model_entry else self.current_model_id())),
+                        ("캐시 상태", model.get("로컬 캐시 상태", "-")),
+                        ("로딩 대상", model.get("로딩 대상 리포지토리", "-")),
+                        ("캐시 위치", model.get("캐시 위치", "-")),
+                    ],
+                }
+            )
+        if engine or torch or device or runtime:
+            sections.append(
+                {
+                    "title": "실행 환경",
+                    "rows": [
+                        ("엔진", engine.get("CTranslate2 상태", "-")),
+                        ("CUDA 형식", engine.get("CUDA 추론 형식", "-")),
+                        ("PyTorch", torch.get("PyTorch 버전", "-")),
+                        ("CUDA 사용", torch.get("torch.cuda.is_available()", "-")),
+                        ("장치 판단", device.get("장치 판단", "-")),
+                        ("최근 조합", runtime.get("최근 성공 조합", "-")),
+                    ],
+                }
+            )
+        if not details:
+            sections.append({"title": "점검 상세", "rows": [("상태", "아직 점검 상세 정보가 없습니다.")]})
+        return sections
+
+    def _format_detail_mapping(self, mapping: dict, prefix: str = "- ") -> list[str]:
+        if not isinstance(mapping, dict):
+            return [f"{prefix}{mapping}"]
+        lines = []
+        for key in sorted(mapping.keys()):
+            value = mapping.get(key)
+            if isinstance(value, dict):
+                lines.append(f"{prefix}{key}:")
+                lines.extend(self._format_detail_mapping(value, prefix=prefix + "  "))
+            else:
+                lines.append(f"{prefix}{key}: {value}")
+        return lines
 
     def start_system_check(self):
         if self.worker_thread and self.worker_thread.is_alive():
@@ -1858,9 +2066,13 @@ class SubtitleGUI(QMainWindow):
         scan_settings["preferred_device"] = self.current_preferred_device()
 
         self._set_status("시스템 상태를 점검하는 중입니다...")
+        self.system_overview_title.setText("전사 환경 점검 중")
+        self.system_overview_meta.setText("모델 캐시 · CTranslate2 · PyTorch/CUDA · GPU/CPU · 런타임 조합")
+        self.system_check_steps.setText("모델 캐시 확인 → 엔진 점검 → 장치 감지 → 실행 조합 검증")
+        self.system_check_steps.setVisible(True)
         self._set_transfer_texts(
             f"시스템 점검 · 모델 {self.current_model_id()} · 장치 선호 {self.current_preferred_device().upper()}",
-            "환경, 엔진, 장치, 실행 조합을 한 번에 점검합니다.",
+            "환경, 엔진, 장치, 실행 조합을 점검합니다.",
         )
         self._begin_task("system_check", "시스템 점검", cancellable=False)
         self.worker_thread = threading.Thread(target=self._worker_system_check, args=(scan_settings,), daemon=True)
@@ -1883,7 +2095,7 @@ class SubtitleGUI(QMainWindow):
                 chosen = choose_runtime_device_and_type(model_id=model_id, preferred_device=pref, log=log)
                 self.msg_queue.put(("runtime_choice", chosen))
             else:
-                self.msg_queue.put(("runtime_choice_text", "선택 모델이 아직 로컬에 없어 실제 로딩 검증은 건너뛰었습니다. 모델 다운로드 후 전사 시작 시 자동 판정됩니다."))
+                self.msg_queue.put(("runtime_choice_text", "선택 모델이 로컬에 없어 실제 로딩 검증은 건너뛰었습니다."))
 
             self.msg_queue.put(("status", "시스템 상태 점검이 완료되었습니다."))
         except Exception as exc:
@@ -1907,9 +2119,6 @@ class SubtitleGUI(QMainWindow):
         meta = choice.get("reason", "실행 조합 검증 성공")
         self._update_status_tile("runtime", "success", summary, meta)
 
-    # -------------------------------------------------
-    # Model download / confirmation
-    # -------------------------------------------------
     def _request_model_download_permission(self, info: dict, reason: str) -> bool:
         ticket = {"info": info, "reason": reason, "approved": False, "event": threading.Event()}
         self.msg_queue.put(("ask_model_download", ticket))
@@ -1918,7 +2127,11 @@ class SubtitleGUI(QMainWindow):
 
     def _show_model_download_dialog(self, info: dict, reason: str) -> bool:
         dialog = ModelDownloadDialog(info, reason, self)
-        return dialog.exec() == QDialog.DialogCode.Accepted
+        approved = dialog.exec() == QDialog.DialogCode.Accepted
+        if approved:
+            self.download_progress_dialog = DownloadProgressDialog(self)
+            self.download_progress_dialog.show()
+        return approved
 
     def _ensure_model_ready(self, model_id: str, reason: str, log) -> dict:
         info = inspect_model_availability(model_id, include_remote_meta=True)
@@ -1984,9 +2197,6 @@ class SubtitleGUI(QMainWindow):
         finally:
             self.msg_queue.put(("task_finished", "model_download"))
 
-    # -------------------------------------------------
-    # Transcription
-    # -------------------------------------------------
     def start_transcription(self):
         if self.worker_thread and self.worker_thread.is_alive():
             self._notify_task_busy("전사 작업")
@@ -2003,6 +2213,11 @@ class SubtitleGUI(QMainWindow):
         pref = self.current_preferred_device()
         audio_level = self.current_audio_enhance_level()
         output_formats = self.current_output_formats()
+        preset_overrides = self.current_preset_overrides()
+        output_dir = self.current_output_dir()
+        if output_dir and not os.path.isdir(output_dir):
+            QMessageBox.critical(self, "출력 폴더 오류", "출력 폴더를 선택하거나 원본 폴더 저장을 사용하십시오.")
+            return
 
         self.output_path = None
         self.output_paths = {}
@@ -2016,17 +2231,28 @@ class SubtitleGUI(QMainWindow):
         self._append_log("=" * 72)
         self._append_log(f"작업 시작 | files={len(input_paths)}")
         self._append_log(
-            f"실행 설정 | lang={lang_code}, preset={preset_id}, model={model_id}, preferred_device={pref}, audio_enhance={audio_level}, outputs={output_formats}"
+            f"실행 설정 | lang={lang_code}, preset={preset_id}, model={model_id}, preferred_device={pref}, audio_enhance={audio_level}, outputs={output_formats}, output_dir={output_dir or 'source'}, preset_overrides={preset_overrides}"
         )
 
         self.worker_thread = threading.Thread(
             target=self._worker_transcription,
-            args=(input_paths, lang_code, model_id, preset_id, pref, audio_level, output_formats),
+            args=(input_paths, lang_code, model_id, preset_id, pref, audio_level, output_formats, output_dir, preset_overrides),
             daemon=True,
         )
         self.worker_thread.start()
 
-    def _worker_transcription(self, input_paths: list[str], lang_code: str, model_id: str, preset_id: str, pref: str, audio_level: str, output_formats: list[str]):
+    def _worker_transcription(
+        self,
+        input_paths: list[str],
+        lang_code: str,
+        model_id: str,
+        preset_id: str,
+        pref: str,
+        audio_level: str,
+        output_formats: list[str],
+        output_dir: str | None,
+        preset_overrides: dict | None,
+    ):
         def log(msg: str):
             self.msg_queue.put(("log", msg))
 
@@ -2085,6 +2311,8 @@ class SubtitleGUI(QMainWindow):
                     preset_id=preset_id,
                     audio_enhance_level=audio_level,
                     output_formats=output_formats,
+                    output_dir=output_dir,
+                    preset_overrides=preset_overrides,
                     cancel_event=self.cancel_event,
                 )
                 batch_item = {
@@ -2111,9 +2339,6 @@ class SubtitleGUI(QMainWindow):
             tb = traceback.format_exc()
             self.msg_queue.put(("error", f"{exc}\n\n{tb}"))
 
-    # -------------------------------------------------
-    # Result open
-    # -------------------------------------------------
     def open_result(self):
         if self.output_path and os.path.isfile(self.output_path):
             open_path(self.output_path)
@@ -2124,9 +2349,6 @@ class SubtitleGUI(QMainWindow):
             if os.path.isdir(folder):
                 open_path(folder)
 
-    # -------------------------------------------------
-    # Queue polling
-    # -------------------------------------------------
     def _update_download_transfer_ui(self, payload: dict):
         percent = float(payload.get("percent") or 0.0)
         self._set_progress_value(percent)
@@ -2134,6 +2356,10 @@ class SubtitleGUI(QMainWindow):
             f"다운로드 {percent:.0f}% · {payload.get('downloaded_text', '')} / {payload.get('total_text', '')}",
             payload.get("message", ""),
         )
+        if self.download_progress_dialog is not None:
+            self.download_progress_dialog.update_progress(payload)
+            if not self.download_progress_dialog.isVisible():
+                self.download_progress_dialog.show()
 
     def _poll_queue(self):
         try:
@@ -2142,7 +2368,6 @@ class SubtitleGUI(QMainWindow):
 
                 if kind == "log":
                     self._append_log(payload)
-
                 elif kind == "progress":
                     try:
                         percent = max(0.0, min(100.0, float(payload)))
@@ -2152,31 +2377,23 @@ class SubtitleGUI(QMainWindow):
                             self._refresh_job_clock()
                     except Exception:
                         pass
-
                 elif kind == "busy_on":
                     self._progress_busy_on()
-
                 elif kind == "busy_off":
                     self._progress_busy_off()
-
                 elif kind == "status":
                     self._set_status(payload)
-
                 elif kind == "startup_info":
                     self._apply_startup_info(payload)
                     self._set_status("시스템 상태 점검이 완료되었습니다.")
-
                 elif kind == "model_availability":
                     self._apply_model_availability(payload)
-
                 elif kind == "ask_model_download":
                     payload["approved"] = self._show_model_download_dialog(payload["info"], payload["reason"])
                     payload["event"].set()
-
                 elif kind == "download_progress":
                     self._update_download_transfer_ui(payload)
                     self._refresh_job_clock()
-
                 elif kind == "runtime_choice":
                     self._apply_runtime_choice_cards(payload)
                     if self.current_task_kind == "transcription":
@@ -2184,21 +2401,17 @@ class SubtitleGUI(QMainWindow):
                             f"전사 실행 조합 · {payload.get('device')} / {payload.get('compute_type')}",
                             "실행 조합 검증 완료, 첫 파일 전사를 준비하는 중입니다.",
                         )
-
                 elif kind == "runtime_choice_text":
                     self._update_status_tile("runtime", "warning", payload, "자동 fallback이 필요할 수 있습니다.")
-
                 elif kind == "task_finished":
                     if payload in {"model_download", "system_check"}:
                         self._finish_task(clear_transfer=False)
-
                 elif kind == "batch_item_start":
                     self._append_log(f"[{payload['index']}/{payload['total']}] 처리 시작: {payload['path']}")
                     self._set_transfer_texts(
                         f"배치 {payload['index']}/{payload['total']} · {os.path.basename(payload['path'])}",
                         "현재 파일을 전사하는 중입니다.",
                     )
-
                 elif kind == "batch_item_done":
                     preprocess_info = payload.get("preprocess_info")
                     preprocess_summary = self._format_preprocess_summary(preprocess_info)
@@ -2211,7 +2424,6 @@ class SubtitleGUI(QMainWindow):
                     self.output_paths = dict(payload.get("saved_paths", {}))
                     self.open_result_btn.setEnabled(True)
                     self.open_folder_btn.setEnabled(True)
-
                 elif kind == "done":
                     results = payload.get("results", [])
                     chosen = payload.get("chosen", {})
@@ -2245,7 +2457,6 @@ class SubtitleGUI(QMainWindow):
                         clear_temp_work_dir(remove_root=False)
                     except Exception:
                         pass
-
                 elif kind == "cancelled":
                     self._set_status(payload)
                     self._set_transfer_texts("작업 취소", payload)
@@ -2255,7 +2466,6 @@ class SubtitleGUI(QMainWindow):
                         clear_temp_work_dir(remove_root=False)
                     except Exception:
                         pass
-
                 elif kind == "error":
                     self._set_status("오류가 발생했습니다.")
                     self._set_transfer_texts("작업 오류", "오류가 발생했습니다. 자세한 내용은 로그를 확인하십시오.")

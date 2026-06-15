@@ -21,6 +21,8 @@ DEFAULT_SETTINGS = {
     "preferred_device": DEFAULT_PREFERRED_DEVICE,
     "audio_enhance_level": DEFAULT_AUDIO_ENHANCE_LEVEL,
     "output_formats": list(DEFAULT_OUTPUT_FORMATS),
+    "use_source_folder": True,
+    "output_dir": "",
     "last_good_device": "",
     "last_good_compute_type": "",
 }
