@@ -361,11 +361,49 @@ def _write_vtt(out_path: str, cues: list[dict]) -> str:
     return out_path
 
 
+def _write_smi(out_path: str, cues: list[dict]) -> str:
+    def sec2smi(t: float) -> int:
+        return max(0, int(round(float(t) * 1000)))
+
+    def smi_text(text: str) -> str:
+        escaped = (
+            str(text or "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .strip()
+        )
+        return escaped.replace("\n", "<br>")
+
+    lines = [
+        "<SAMI>",
+        "<HEAD>",
+        "<STYLE TYPE=\"text/css\">",
+        "<!--",
+        "P { margin-left:2pt; margin-right:2pt; margin-bottom:1pt; margin-top:1pt; text-align:center; font-size:20pt; }",
+        ".KRCC { Name:Korean; lang:ko-KR; SAMIType:CC; }",
+        "-->",
+        "</STYLE>",
+        "</HEAD>",
+        "<BODY>",
+    ]
+    for cue in cues:
+        text = smi_text(cue.get("text", ""))
+        if not text:
+            continue
+        lines.append(f"<SYNC Start={sec2smi(cue['start'])}><P Class=KRCC>{text}")
+        lines.append(f"<SYNC Start={sec2smi(cue['end'])}><P Class=KRCC>&nbsp;")
+    lines.extend(["</BODY>", "</SAMI>"])
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return out_path
+
+
 def save_results(base_path: str, cues: list[dict], output_formats: list[str] | tuple[str, ...] | None = None) -> dict:
     formats = [str(fmt).strip().lower() for fmt in (output_formats or DEFAULT_OUTPUT_FORMATS)]
     valid_formats = []
     for fmt in formats:
-        if fmt in {"srt", "txt", "vtt"} and fmt not in valid_formats:
+        if fmt in {"srt", "smi", "txt", "vtt"} and fmt not in valid_formats:
             valid_formats.append(fmt)
     if not valid_formats:
         valid_formats = list(DEFAULT_OUTPUT_FORMATS)
@@ -375,6 +413,8 @@ def save_results(base_path: str, cues: list[dict], output_formats: list[str] | t
         out_path = f"{base_path}.{fmt}"
         if fmt == "srt":
             saved[fmt] = _write_srt(out_path, cues)
+        elif fmt == "smi":
+            saved[fmt] = _write_smi(out_path, cues)
         elif fmt == "txt":
             saved[fmt] = _write_txt(out_path, cues)
         elif fmt == "vtt":
@@ -681,6 +721,7 @@ def transcribe_media(model, media_path: str, lang: str, preset: dict, log, progr
     temperature = list(preset.get("temperature", [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]))
     log_prob_threshold = float(preset.get("log_prob_threshold", -1.0))
     compression_ratio_threshold = float(preset.get("compression_ratio_threshold", 2.4))
+    no_speech_threshold = float(preset.get("no_speech_threshold", 0.6))
     condition_on_previous_text = bool(preset.get("condition_on_previous_text", False))
     repetition_penalty = float(preset.get("repetition_penalty", 1.0))
     word_timestamps = bool(preset.get("word_timestamps", True))
@@ -709,6 +750,7 @@ def transcribe_media(model, media_path: str, lang: str, preset: dict, log, progr
         temperature=temperature,
         log_prob_threshold=log_prob_threshold,
         compression_ratio_threshold=compression_ratio_threshold,
+        no_speech_threshold=no_speech_threshold,
         condition_on_previous_text=condition_on_previous_text,
         repetition_penalty=repetition_penalty,
         word_timestamps=word_timestamps,
@@ -761,6 +803,8 @@ def run_transcription_job(
     preset_id: str = DEFAULT_PRESET_ID,
     audio_enhance_level: str = DEFAULT_AUDIO_ENHANCE_LEVEL,
     output_formats: list[str] | tuple[str, ...] | None = None,
+    output_dir: str | None = None,
+    preset_overrides: dict | None = None,
     cancel_event=None,
 ):
     setup_runtime_environment()
@@ -786,7 +830,9 @@ def run_transcription_job(
         whisper_model = load_faster_whisper_model(model_id, device, compute_type, log)
 
         _raise_if_cancelled(cancel_event)
-        preset = get_transcription_preset(preset_id)
+        preset = dict(get_transcription_preset(preset_id))
+        if preset_overrides:
+            preset.update(preset_overrides)
         log(f"선택 프리셋: {preset['label']} ({preset['id']})")
 
         progress(20)
@@ -800,10 +846,13 @@ def run_transcription_job(
         _raise_if_cancelled(cancel_event)
         progress(98)
         base, _ = os.path.splitext(in_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            base = os.path.join(output_dir, os.path.basename(base))
         saved_paths = save_results(base, cues, output_formats=output_formats)
 
         progress(100)
-        save_order = ["srt", "vtt", "txt"]
+        save_order = ["srt", "smi", "vtt", "txt"]
         primary_path = next((saved_paths[fmt] for fmt in save_order if fmt in saved_paths), next(iter(saved_paths.values())))
         log("결과 저장 완료: " + ", ".join(f"{fmt.upper()}={path}" for fmt, path in saved_paths.items()))
         return {"primary_path": primary_path, "saved_paths": saved_paths, "effective_lang": effective_lang, "preprocess_info": preprocess_info}

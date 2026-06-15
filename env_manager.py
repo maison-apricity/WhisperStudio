@@ -671,6 +671,8 @@ def _pretty_os_text() -> str:
         release = platform.release() or "Windows"
         version = platform.version() or ""
         build = version.split(".")[-1] if version else ""
+        if release == "10" and build.isdigit() and int(build) >= 22000:
+            release = "11"
         if build:
             return f"Windows {release} (build {build})"
         return f"Windows {release}"
